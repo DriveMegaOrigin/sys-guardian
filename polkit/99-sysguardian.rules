@@ -1,0 +1,25 @@
+// =============================================================================
+// Sys-Guardian Polkit Rule
+// Intercepts GUI shutdown, reboot, and suspend requests when critical locks exist.
+// Location: /etc/polkit-1/rules.d/99-sysguardian.rules
+// =============================================================================
+
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.login1.reboot" ||
+        action.id == "org.freedesktop.login1.reboot-multiple-sessions" ||
+        action.id == "org.freedesktop.login1.power-off" ||
+        action.id == "org.freedesktop.login1.power-off-multiple-sessions" ||
+        action.id == "org.freedesktop.login1.suspend" ||
+        action.id == "org.freedesktop.login1.suspend-multiple-sessions") {
+        
+        try {
+            var check = polkit.spawn(["/bin/bash", "-c", "if ls /run/user/*/sys-guardian.lock 1>/dev/null 2>&1; then echo 'BLOCK'; else echo 'FREE'; fi"]);
+            
+            if (check.indexOf("BLOCK") !== -1) {
+                return polkit.Result.NO;
+            }
+        } catch (error) {
+            return polkit.Result.YES;
+        }
+    }
+});

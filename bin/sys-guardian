@@ -1,0 +1,543 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# Sys-Guardian - System-Wide Hardware & Integrity Daemon for Linux
+# Repository: https://github.com/DriveMegaOrigin/sys-guardian
+# License: GPL-3.0
+# ==============================================================================
+
+set -o pipefail
+
+VERSION="3.1.0"
+
+# Standard System FHS Paths
+if [ -d "/run/sys-guardian" ]; then
+    RUNTIME_DIR="/run/sys-guardian"
+elif [ -n "$XDG_RUNTIME_DIR" ] && [ -d "$XDG_RUNTIME_DIR" ]; then
+    RUNTIME_DIR="$XDG_RUNTIME_DIR/sys-guardian"
+else
+    RUNTIME_DIR="/tmp/sys-guardian"
+fi
+mkdir -p "$RUNTIME_DIR" 2>/dev/null
+chmod 755 "$RUNTIME_DIR" 2>/dev/null || true
+
+LOCK_FILE="${RUNTIME_DIR}/sys-guardian.lock"
+REPORT_FILE="${RUNTIME_DIR}/report.txt"
+GLOBAL_REPORT="/tmp/sys-guardian-report.txt"
+RAW_FILE="${RUNTIME_DIR}/raw.tmp"
+STATE_HASH_FILE="${RUNTIME_DIR}/last_hash"
+INHIBIT_PID_FILE="${RUNTIME_DIR}/inhibit.pid"
+
+# Persistent Blackbox (Standard Linux /var/log location, fallback to runtime)
+if [ -d "/var/log/sys-guardian" ] || mkdir -p "/var/log/sys-guardian" 2>/dev/null; then
+    BLACKBOX_DIR="/var/log/sys-guardian"
+else
+    BLACKBOX_DIR="${RUNTIME_DIR}/blackbox"
+    mkdir -p "$BLACKBOX_DIR" 2>/dev/null
+fi
+chmod 755 "$BLACKBOX_DIR" 2>/dev/null || true
+
+BLACKBOX_LATEST="${BLACKBOX_DIR}/crash_latest.log"
+BLACKBOX_PREV="${BLACKBOX_DIR}/crash_previous.log"
+
+# Warning Thresholds
+DISK_WARN_THRESHOLD=90
+TEMP_WARN_THRESHOLD=92
+
+# ANSI Colors
+RED="\033[1;31m"
+GREEN="\033[1;32m"
+YELLOW="\033[1;33m"
+CYAN="\033[1;36m"
+BOLD="\033[1m"
+RESET="\033[0m"
+
+# ------------------------------------------------------------------------------
+# Systemd Native Inhibitor Lock Management (Zero Root, Native Desktop Prompt)
+# ------------------------------------------------------------------------------
+start_inhibitor() {
+    local reason="${1:-System stability risk or update in progress}"
+    if command -v systemd-inhibit >/dev/null 2>&1; then
+        if [ ! -f "$INHIBIT_PID_FILE" ] || ! kill -0 "$(cat "$INHIBIT_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+            systemd-inhibit --what=shutdown:sleep \
+                            --who="Sys-Guardian" \
+                            --why="$reason" \
+                            --mode=block \
+                            sleep infinity >/dev/null 2>&1 &
+            echo $! > "$INHIBIT_PID_FILE"
+        fi
+    fi
+}
+
+stop_inhibitor() {
+    if [ -f "$INHIBIT_PID_FILE" ]; then
+        local pid
+        pid=$(cat "$INHIBIT_PID_FILE" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+        fi
+        rm -f "$INHIBIT_PID_FILE"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Blackbox Management (Rotate 2 persistent incident records)
+# ------------------------------------------------------------------------------
+save_to_blackbox() {
+    local content="$1"
+    mkdir -p "$BLACKBOX_DIR" 2>/dev/null
+    if [ -f "$BLACKBOX_LATEST" ]; then
+        mv "$BLACKBOX_LATEST" "$BLACKBOX_PREV" 2>/dev/null || true
+    fi
+    echo "$content" > "$BLACKBOX_LATEST" 2>/dev/null || true
+    chmod 644 "$BLACKBOX_LATEST" "$BLACKBOX_PREV" 2>/dev/null || true
+}
+
+# ------------------------------------------------------------------------------
+# Cross-Session Desktop Notifications (Dispatched from System Daemon to User GUI)
+# ------------------------------------------------------------------------------
+send_alert() {
+    local title="$1"
+    local message="$2"
+    local urgency="${3:-critical}"
+
+    # Discover active graphical user session via loginctl
+    local gui_user="" gui_uid=""
+    if command -v loginctl >/dev/null 2>&1; then
+        local session_id
+        session_id=$(loginctl list-sessions --no-legend 2>/dev/null | awk '$3 != "root" && $3 != "" {print $1}' | head -n 1)
+        [ -z "$session_id" ] && session_id=$(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}' | head -n 1)
+        if [ -n "$session_id" ]; then
+            gui_user=$(loginctl show-session -p Name --value "$session_id" 2>/dev/null)
+            gui_uid=$(id -u "$gui_user" 2>/dev/null)
+        fi
+    fi
+
+    # Fallback to current user if loginctl is not active
+    if [ -z "$gui_user" ] || [ "$gui_user" = "root" ]; then
+        gui_user="${SUDO_USER:-$(whoami)}"
+        gui_uid=$(id -u "$gui_user" 2>/dev/null)
+    fi
+
+    local user_runtime="/run/user/${gui_uid}"
+    local user_bus="unix:path=${user_runtime}/bus"
+    local wayland_disp="${WAYLAND_DISPLAY:-wayland-0}"
+    local x11_disp="${DISPLAY:-:0}"
+
+    if command -v kdialog >/dev/null 2>&1; then
+        if [ "$(id -u)" -eq 0 ] && [ -n "$gui_user" ] && [ "$gui_user" != "root" ]; then
+            sudo -u "$gui_user" \
+                XDG_RUNTIME_DIR="$user_runtime" \
+                DBUS_SESSION_BUS_ADDRESS="$user_bus" \
+                DISPLAY="$x11_disp" \
+                WAYLAND_DISPLAY="$wayland_disp" \
+                kdialog --title "🚨 $title (Sys-Guardian)" \
+                        --warningyesno "$message\n\nWould you like to open the detailed diagnostic report?" \
+                        --yes-label "View Details" --no-label "Ignore" >/dev/null 2>&1 &
+        else
+            kdialog --title "🚨 $title (Sys-Guardian)" \
+                    --warningyesno "$message\n\nWould you like to open the detailed diagnostic report?" \
+                    --yes-label "View Details" --no-label "Ignore" >/dev/null 2>&1 &
+        fi
+    elif command -v notify-send >/dev/null 2>&1; then
+        if [ "$(id -u)" -eq 0 ] && [ -n "$gui_user" ] && [ "$gui_user" != "root" ]; then
+            sudo -u "$gui_user" \
+                XDG_RUNTIME_DIR="$user_runtime" \
+                DBUS_SESSION_BUS_ADDRESS="$user_bus" \
+                DISPLAY="$x11_disp" \
+                WAYLAND_DISPLAY="$wayland_disp" \
+                notify-send -u "$urgency" "🚨 $title" "$message\n(Report: $GLOBAL_REPORT)" -i dialog-warning &
+        else
+            notify-send -u "$urgency" "🚨 $title" "$message\n(Report: $GLOBAL_REPORT)" -i dialog-warning &
+        fi
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Check 1: Thermal Sensors (CPU / GPU / Motherboard)
+# ------------------------------------------------------------------------------
+check_thermals() {
+    local max_temp=0
+    for tz in /sys/class/thermal/thermal_zone*/temp; do
+        if [ -r "$tz" ]; then
+            local t
+            t=$(cat "$tz" 2>/dev/null)
+            if [ -n "$t" ] && [ "$t" -gt "$max_temp" ]; then
+                max_temp=$t
+            fi
+        fi
+    done
+    local temp_c=$((max_temp / 1000))
+    if [ "$temp_c" -ge "$TEMP_WARN_THRESHOLD" ]; then
+        echo "⚠️ [THERMAL ALERT]: Sensor reached ${temp_c}°C (Safety threshold: ${TEMP_WARN_THRESHOLD}°C)!" >> "$RAW_FILE"
+        echo "Warning: Immediate risk of motherboard thermal cutoff or thermal throttling." >> "$RAW_FILE"
+        echo "--------------------------------------------------" >> "$RAW_FILE"
+        return 1
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Check 2: Memory Pressure & Swap Thrashing (Linux PSI)
+# ------------------------------------------------------------------------------
+check_memory_pressure() {
+    if [ -r /proc/pressure/memory ]; then
+        local avg10
+        avg10=$(grep "some" /proc/pressure/memory 2>/dev/null | awk -F'avg10=' '{print $2}' | awk '{print $1}' | cut -d'.' -f1)
+        if [ -n "$avg10" ] && [ "$avg10" -ge 40 ]; then
+            echo "⚠️ [MEMORY PRESSURE (PSI)]: 10-second stall average is ${avg10}%!" >> "$RAW_FILE"
+            echo "Warning: System is in heavy swap thrashing and approaching a hard lockup." >> "$RAW_FILE"
+            echo "--------------------------------------------------" >> "$RAW_FILE"
+            return 1
+        fi
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# Main One-shot Check Engine
+# ------------------------------------------------------------------------------
+run_check() {
+    local error_found=0
+    local alert_title="CRITICAL ISSUE DETECTED"
+    local alert_summary=""
+
+    > "$RAW_FILE"
+
+    # 1. Package Managers in Progress (Protect against database corruption)
+    if pgrep -x "apt" >/dev/null 2>&1 || pgrep -x "apt-get" >/dev/null 2>&1 || \
+       pgrep -x "dpkg" >/dev/null 2>&1 || pgrep -x "pacman" >/dev/null 2>&1 || \
+       pgrep -x "dnf" >/dev/null 2>&1; then
+        error_found=1
+        alert_title="SYSTEM UPDATE IN PROGRESS"
+        alert_summary="A package manager is currently writing files.\nDo NOT power off or reboot now!"
+        echo "=== [ACTIVE PACKAGE MANAGER DETECTED] ===" >> "$RAW_FILE"
+        echo "Running processes: $(pgrep -a -E 'apt|apt-get|dpkg|pacman|dnf')" >> "$RAW_FILE"
+        echo "--------------------------------------------------" >> "$RAW_FILE"
+    fi
+
+    # 2. Failed Systemd Units
+    local failed_services
+    failed_services=$(systemctl list-units --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}')
+    if [ -n "$failed_services" ]; then
+        error_found=1
+        [ -z "$alert_summary" ] && alert_title="SYSTEM SERVICES FAILED"
+        [ -z "$alert_summary" ] && alert_summary="One or more critical system services failed:\n$failed_services"
+        echo "=== [FAILED SYSTEMD SERVICES] ===" >> "$RAW_FILE"
+        echo "$failed_services" >> "$RAW_FILE"
+        echo "" >> "$RAW_FILE"
+        for srv in $failed_services; do
+            echo "--- Recent logs for: $srv ---" >> "$RAW_FILE"
+            journalctl -u "$srv" -n 5 --no-pager 2>/dev/null >> "$RAW_FILE"
+        done
+        echo "--------------------------------------------------" >> "$RAW_FILE"
+    fi
+
+    # 3. Critical GPU & Virtualization Failures (VFIO, IOMMU, QEMU, NVIDIA, AMD)
+    local crit_gpu crit_virt
+    crit_gpu=$(journalctl -k -b 2>/dev/null | grep -iE "NVRM: Xid|fallen off the bus|amdgpu.*GPU reset|GPU hang|fence fallback timer expired" | grep -v -- "-- No entries --" | tail -n 6)
+    crit_virt=$(journalctl -k -b -p 0..3 2>/dev/null | grep -iE "vfio|iommu|kvm|qemu" | grep -E "kernel: .+" | grep -v -- "-- No entries --" | tail -n 6)
+
+    if [ -n "$crit_gpu" ] || [ -n "$crit_virt" ]; then
+        error_found=1
+        alert_title="GPU / VIRTUALIZATION CRASH"
+        alert_summary="Graphics card fell off the bus or VFIO/QEMU failed!\nSave your work immediately."
+        echo "=== [CRITICAL GPU / VIRTUALIZATION CRASH] ===" >> "$RAW_FILE"
+        [ -n "$crit_gpu" ] && echo -e "GPU Driver Logs:\n$crit_gpu\n" >> "$RAW_FILE"
+        [ -n "$crit_virt" ] && echo -e "Virtualization Kernel Logs:\n$crit_virt\n" >> "$RAW_FILE"
+        echo "Recommended Immediate Actions:" >> "$RAW_FILE"
+        echo "1. Save all open work in host applications." >> "$RAW_FILE"
+        echo "2. Do not attempt to launch new VMs before cleanly rebooting." >> "$RAW_FILE"
+        echo "--------------------------------------------------" >> "$RAW_FILE"
+    fi
+
+    # 4. Storage Block I/O & Filesystem Errors
+    local io_errors
+    io_errors=$(journalctl -k -b -p 0..3 2>/dev/null | grep -iE "I/O error|EXT4-fs error|BTRFS: error|XFS.*error|buffer I/O error" | grep -v -- "-- No entries --" | tail -n 5)
+    if [ -n "$io_errors" ]; then
+        error_found=1
+        alert_title="STORAGE I/O ERROR DETECTED"
+        alert_summary="Filesystem or storage drive reported read/write block errors!"
+        echo "=== [STORAGE / FILESYSTEM I/O ERRORS] ===" >> "$RAW_FILE"
+        echo "$io_errors" >> "$RAW_FILE"
+        echo "--------------------------------------------------" >> "$RAW_FILE"
+    fi
+
+    # 5. Root Partition Storage Exhaustion
+    local root_usage
+    root_usage=$(df --output=pcent / 2>/dev/null | tr -dc '0-9')
+    if [ -n "$root_usage" ] && [ "$root_usage" -ge "$DISK_WARN_THRESHOLD" ]; then
+        error_found=1
+        [ -z "$alert_summary" ] && alert_title="STORAGE LOW ($root_usage% USED)"
+        [ -z "$alert_summary" ] && alert_summary="The root filesystem (/) has reached $root_usage% capacity."
+        echo "=== [CRITICAL STORAGE CAPACITY] ===" >> "$RAW_FILE"
+        echo "Root filesystem (/) capacity: $root_usage%" >> "$RAW_FILE"
+        echo "--------------------------------------------------" >> "$RAW_FILE"
+    fi
+
+    # 6. Thermal & Memory Pressure Sensors
+    check_thermals || error_found=1
+    check_memory_pressure || error_found=1
+
+    # Evaluation & Lock Handling
+    if [ $error_found -eq 1 ]; then
+        touch "$LOCK_FILE"
+        chmod 644 "$LOCK_FILE" 2>/dev/null || true
+
+        local current_hash
+        current_hash=$(md5sum "$RAW_FILE" 2>/dev/null | awk '{print $1}')
+        local last_hash=""
+        [ -f "$STATE_HASH_FILE" ] && last_hash=$(cat "$STATE_HASH_FILE" 2>/dev/null)
+
+        local full_report
+        full_report=$(cat <<EOF
+==================================================
+🛡️ SYS-GUARDIAN REPORT - INTEGRITY COMPROMISED
+Timestamp: $(date)
+Host: $(hostname) | Kernel: $(uname -r)
+==================================================
+$(cat "$RAW_FILE")
+Protection: SYSTEM SHUTDOWN / REBOOT IS LOCKED.
+To manually release the lock run: sys-guardian unblock
+==================================================
+EOF
+)
+        echo "$full_report" > "$REPORT_FILE" 2>/dev/null || true
+        echo "$full_report" > "$GLOBAL_REPORT" 2>/dev/null || true
+        chmod 644 "$REPORT_FILE" "$GLOBAL_REPORT" 2>/dev/null || true
+
+        # Notify and rotate into persistent blackbox only if the incident is new
+        if [ "$current_hash" != "$last_hash" ]; then
+            echo "$current_hash" > "$STATE_HASH_FILE"
+            save_to_blackbox "$full_report"
+            send_alert "$alert_title" "$alert_summary"
+        fi
+
+        start_inhibitor "$alert_title: $(echo "$alert_summary" | head -n 1)"
+
+        rm -f "$RAW_FILE"
+        return 1
+    else
+        stop_inhibitor
+        rm -f "$LOCK_FILE" "$STATE_HASH_FILE" "$RAW_FILE" "$GLOBAL_REPORT" 2>/dev/null || true
+        return 0
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Daemon Mode: Continuous Real-Time Kernel Event Listener (< 1s latency)
+# ------------------------------------------------------------------------------
+run_daemon() {
+    echo -e "${GREEN}🛡️ Sys-Guardian v${VERSION} daemon active.${RESET} Listening for kernel events in real-time..."
+    run_check
+
+    local last_periodic_check
+    last_periodic_check=$(date +%s)
+
+    journalctl -f -k -p 0..3 --no-pager 2>/dev/null | while read -r line; do
+        local now
+        now=$(date +%s)
+
+        # Immediate trigger on hardware and system crash signatures
+        if echo "$line" | grep -iqE "fallen off the bus|NVRM: Xid|GPU reset|GPU hang|I/O error|EXT4-fs error|BTRFS: error|Out of Memory: Kill process"; then
+            echo -e "${RED}[Sys-Guardian - EVENT CAPTURED]:${RESET} $line"
+            run_check
+            last_periodic_check=$now
+        fi
+
+        # Periodic check every 120 seconds (packages, disk, thermals)
+        if [ $((now - last_periodic_check)) -ge 120 ]; then
+            run_check
+            last_periodic_check=$now
+        fi
+    done
+}
+
+# ------------------------------------------------------------------------------
+# System Diagnostics & Triage
+# ------------------------------------------------------------------------------
+run_diagnose() {
+    echo -e "${BOLD}==================================================${RESET}"
+    echo -e "${CYAN}🔍 SYS-GUARDIAN SYSTEM DIAGNOSTIC TRIAGE${RESET}"
+    echo -e "${BOLD}==================================================${RESET}"
+    
+    echo -e "\n${BOLD}1. [GPU Hardware & Kernel Modules]:${RESET}"
+    if command -v lspci >/dev/null 2>&1; then
+        lspci -nnk | grep -iA 3 -E "vga|3d|display" || echo "No GPUs detected."
+    else
+        echo "lspci command not available."
+    fi
+
+    echo -e "\n${BOLD}2. [QEMU / KVM Virtual Machines]:${RESET}"
+    local qemu_procs
+    qemu_procs=$(ps aux | grep -E "qemu-system|kvm" | grep -v grep)
+    if [ -n "$qemu_procs" ]; then
+        echo "$qemu_procs" | awk '{print "PID: "$2" | State: "$8" | Command: "$11}'
+        if echo "$qemu_procs" | awk '{print $8}' | grep -q "D"; then
+            echo -e "${RED}⚠️ WARNING: QEMU process is stuck in Uninterruptible Sleep (D-state)!${RESET}"
+        fi
+    else
+        echo "No QEMU virtual machine processes currently running."
+    fi
+
+    echo -e "\n${BOLD}3. [Package Manager Locks]:${RESET}"
+    if [ -f /var/lib/dpkg/lock-frontend ]; then
+        local pid
+        pid=$(fuser /var/lib/dpkg/lock-frontend 2>/dev/null)
+        [ -n "$pid" ] && echo "DPKG lock retained by PID: $pid" || echo "DPKG lock-frontend file exists with no active PID."
+    else
+        echo "No active package manager locks detected."
+    fi
+
+    echo -e "\n${BOLD}4. [Thermal Readings]:${RESET}"
+    for tz in /sys/class/thermal/thermal_zone*/temp; do
+        if [ -r "$tz" ]; then
+            local t zone
+            t=$(cat "$tz" 2>/dev/null)
+            zone=$(basename "$(dirname "$tz")")
+            [ -n "$t" ] && echo "  - $zone: $((t / 1000))°C"
+        fi
+    done
+
+    echo -e "\n${BOLD}5. [Power / Shutdown Protection Status]:${RESET}"
+    if [ -f "$LOCK_FILE" ]; then
+        echo -e "${RED}🔴 BLOCKED (Protection active). Run 'sys-guardian status' to read details.${RESET}"
+        if [ -f "$INHIBIT_PID_FILE" ] && kill -0 "$(cat "$INHIBIT_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+            echo -e "   └─ Systemd Inhibitor Lock: ${CYAN}ACTIVE (PID $(cat "$INHIBIT_PID_FILE"))${RESET}"
+        fi
+    else
+        echo -e "${GREEN}🟢 FREE (No active power inhibitors).${RESET}"
+    fi
+    echo -e "${BOLD}==================================================${RESET}"
+}
+
+# ------------------------------------------------------------------------------
+# Help & Usage Screen
+# ------------------------------------------------------------------------------
+show_help() {
+    echo -e "${BOLD}🛡️ Sys-Guardian v${VERSION} - Hardware & System Integrity Guardian for Linux${RESET}
+
+${BOLD}USAGE:${RESET}
+    sys-guardian <COMMAND>
+
+${BOLD}COMMANDS:${RESET}
+    ${CYAN}status${RESET}       Check current health status (${GREEN}🟢 NORMAL${RESET} / ${RED}🔴 BLOCKED${RESET})
+    ${CYAN}check${RESET}        Run an immediate one-shot scan of all sensors
+    ${CYAN}diagnose${RESET}     Deep triage: GPUs, VFIO drivers, zombie VMs, locks, and thermals
+    ${CYAN}log-last${RESET}     View the latest crash report stored in the persistent Blackbox
+    ${CYAN}log-prev${RESET}     View the previous crash report from the Blackbox
+    ${CYAN}unblock${RESET}      Manually remove shutdown/reboot lock
+    ${CYAN}test${RESET}         Trigger a desktop test notification
+    ${CYAN}simulate${RESET}     Inject a test kernel event (gpu|oom|io) into /dev/kmsg
+    ${CYAN}daemon${RESET}       Run in background mode (continuous < 1s kernel event listener)
+    ${CYAN}version${RESET}      Show version information
+    ${CYAN}help${RESET}         Display this help message
+
+${BOLD}EXAMPLES:${RESET}
+    sys-guardian status        # Check if the system is healthy and shutdown is unlocked
+    sys-guardian diagnose      # Inspect hardware drivers and running VM states
+    sys-guardian simulate gpu  # Inject test GPU bus-drop event to verify detection
+    sys-guardian unblock       # Manually dismiss lock to reboot anyway
+    sys-guardian log-last      # Read what caused the last crash after rebooting
+
+${BOLD}EXIT CODES:${RESET}
+    0 = System is healthy and shutdown is free
+    1 = Issue detected or shutdown is blocked
+
+Report issues: https://github.com/DriveMegaOrigin/sys-guardian"
+}
+
+# ------------------------------------------------------------------------------
+# Command Dispatcher
+# ------------------------------------------------------------------------------
+case "$1" in
+    daemon)
+        run_daemon
+        ;;
+    check)
+        run_check
+        exit $?
+        ;;
+    status)
+        if [ -f "$LOCK_FILE" ]; then
+            echo -e "${RED}🔴 STATUS: BLOCKED (Issues detected)${RESET}"
+            if [ -f "$REPORT_FILE" ]; then
+                cat "$REPORT_FILE"
+            elif [ -f "$GLOBAL_REPORT" ]; then
+                cat "$GLOBAL_REPORT"
+            fi
+            exit 1
+        else
+            echo -e "${GREEN}🟢 STATUS: NORMAL (System healthy & shutdown free)${RESET}"
+            exit 0
+        fi
+        ;;
+    diagnose)
+        run_diagnose
+        ;;
+    unblock)
+        stop_inhibitor
+        rm -f "$LOCK_FILE" "$STATE_HASH_FILE" "$RAW_FILE" "$GLOBAL_REPORT" 2>/dev/null || true
+        echo -e "${GREEN}🔓 Shutdown lock and systemd inhibitor successfully removed.${RESET}"
+        ;;
+    log-last)
+        if [ -f "$BLACKBOX_LATEST" ]; then
+            echo -e "${BOLD}📄 === LATEST BLACKBOX INCIDENT RECORD ===${RESET}"
+            cat "$BLACKBOX_LATEST"
+        else
+            echo "Blackbox is empty (no recent crashes recorded)."
+        fi
+        ;;
+    log-prev)
+        if [ -f "$BLACKBOX_PREV" ]; then
+            echo -e "${BOLD}📄 === PREVIOUS BLACKBOX INCIDENT RECORD ===${RESET}"
+            cat "$BLACKBOX_PREV"
+        else
+            echo "No previous crash record available."
+        fi
+        ;;
+    test)
+        echo "Sending test desktop notification to active graphical session..."
+        send_alert "TEST NOTIFICATION" "Sys-Guardian test alert: desktop integration verified." "normal"
+        echo "Test completed."
+        ;;
+    simulate)
+        case "$2" in
+            gpu)
+                echo "Injecting simulated GPU crash into /dev/kmsg..."
+                echo "<3>NVRM: Xid (PCI:0000:01:00): 79, GPU has fallen off the bus." | sudo tee /dev/kmsg >/dev/null
+                echo -e "${GREEN}✓ Injected priority <3> GPU drop event into kernel ring buffer.${RESET}"
+                echo "Run 'sys-guardian check' or 'sys-guardian status' to see the reaction!"
+                ;;
+            oom)
+                echo "Injecting simulated OOM killer event into /dev/kmsg..."
+                echo "<3>Out of Memory: Kill process 9999 (test-oom) score 999." | sudo tee /dev/kmsg >/dev/null
+                echo -e "${GREEN}✓ Injected priority <3> OOM event into kernel ring buffer.${RESET}"
+                echo "Run 'sys-guardian check' or 'sys-guardian status' to see the reaction!"
+                ;;
+            io)
+                echo "Injecting simulated block I/O error into /dev/kmsg..."
+                echo "<3>buffer I/O error on dev nvme0n1p2, logical block 99999." | sudo tee /dev/kmsg >/dev/null
+                echo -e "${GREEN}✓ Injected priority <3> I/O error into kernel ring buffer.${RESET}"
+                echo "Run 'sys-guardian check' or 'sys-guardian status' to see the reaction!"
+                ;;
+            *)
+                echo "Usage: sys-guardian simulate {gpu|oom|io}"
+                ;;
+        esac
+        ;;
+    version|-v|--version)
+        echo "sys-guardian version ${VERSION}"
+        ;;
+    help|-h|--help)
+        show_help
+        ;;
+    *)
+        if [ -z "$1" ]; then
+            show_help
+        else
+            echo -e "${RED}Unknown command: $1${RESET}"
+            echo "Run 'sys-guardian help' for available commands."
+            exit 1
+        fi
+        ;;
+esac

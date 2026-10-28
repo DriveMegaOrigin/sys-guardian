@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+# ==============================================================================
+# Sys-Guardian System Tray Applet
+# Lightweight StatusNotifierItem (SNI) implementation for KDE, GNOME & XFCE
+# Repository: https://github.com/DriveMegaOrigin/sys-guardian
+# License: GPL-3.0
+# ==============================================================================
+
+import os
+import sys
+import subprocess
+import signal
+
+try:
+    from gi.repository import GLib, Gio
+except ImportError:
+    print("Error: PyGObject (python3-gi) is required for the system tray applet.")
+    sys.exit(1)
+
+# Recognized lock and report paths across system and user daemon modes
+LOCK_CANDIDATES = [
+    "/run/sys-guardian/sys-guardian.lock",
+    "/tmp/sys-guardian/sys-guardian.lock",
+    os.path.expanduser("~/.local/share/sys-guardian/sys-guardian.lock")
+]
+UID = os.getuid()
+candidate_run = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{UID}")
+LOCK_CANDIDATES.append(os.path.join(candidate_run, "sys-guardian.lock"))
+LOCK_CANDIDATES.append(f"/tmp/sys-guardian-{UID}/sys-guardian.lock")
+
+REPORT_CANDIDATES = [
+    "/tmp/sys-guardian-report.txt",
+    "/run/sys-guardian/report.txt"
+]
+
+def find_lock():
+    for p in LOCK_CANDIDATES:
+        if os.path.exists(p):
+            return p
+    return None
+
+def find_report():
+    for p in REPORT_CANDIDATES:
+        if os.path.exists(p):
+            return p
+    return None
+
+SNI_XML = """
+<node>
+  <interface name="org.kde.StatusNotifierItem">
+    <property name="Category" type="s" access="read"/>
+    <property name="Id" type="s" access="read"/>
+    <property name="Title" type="s" access="read"/>
+    <property name="Status" type="s" access="read"/>
+    <property name="WindowId" type="i" access="read"/>
+    <property name="IconName" type="s" access="read"/>
+    <property name="OverlayIconName" type="s" access="read"/>
+    <property name="AttentionIconName" type="s" access="read"/>
+    <property name="AttentionMovieName" type="s" access="read"/>
+    <property name="ToolTip" type="(sa(iiay)ss)" access="read"/>
+    <property name="IconThemePath" type="s" access="read"/>
+    <property name="Menu" type="o" access="read"/>
+    <property name="ItemIsMenu" type="b" access="read"/>
+    <method name="ContextMenu">
+      <arg name="x" type="i" direction="in"/>
+      <arg name="y" type="i" direction="in"/>
+    </method>
+    <method name="Activate">
+      <arg name="x" type="i" direction="in"/>
+      <arg name="y" type="i" direction="in"/>
+    </method>
+    <method name="SecondaryActivate">
+      <arg name="x" type="i" direction="in"/>
+      <arg name="y" type="i" direction="in"/>
+    </method>
+    <method name="Scroll">
+      <arg name="delta" type="i" direction="in"/>
+      <arg name="orientation" type="s" direction="in"/>
+    </method>
+    <signal name="NewTitle"/>
+    <signal name="NewIcon"/>
+    <signal name="NewAttentionIcon"/>
+    <signal name="NewOverlayIcon"/>
+    <signal name="NewToolTip"/>
+    <signal name="NewStatus">
+      <arg name="status" type="s"/>
+    </signal>
+  </interface>
+</node>
+"""
+
+class SysGuardianTray:
+    def __init__(self):
+        self.is_blocked = False
+        self.con = None
+        self.node_info = Gio.DBusNodeInfo.new_for_xml(SNI_XML)
+        self.interface_info = self.node_info.interfaces[0]
+
+    def get_icon(self):
+        return "security-low" if self.is_blocked else "security-high"
+
+    def get_tooltip(self):
+        icon = self.get_icon()
+        if self.is_blocked:
+            title = "Sys-Guardian: BLOCKED"
+            desc = "Issues detected! Click to view diagnostic report."
+        else:
+            title = "Sys-Guardian: Normal"
+            desc = "System is healthy & protected."
+        return GLib.Variant("(sa(iiay)ss)", (icon, [], title, desc))
+
+    def on_method_call(self, connection, sender, path, iface, method_name, params, invocation):
+        if method_name == "Activate":
+            report = find_report()
+            if report:
+                subprocess.Popen(["xdg-open", report])
+            else:
+                subprocess.Popen(["sys-guardian", "status"])
+            invocation.return_value(None)
+        elif method_name == "ContextMenu":
+            cmd = (
+                "kdialog --menu 'Sys-Guardian' "
+                "status 'View Status' "
+                "diagnose 'Run Diagnostic Triage' "
+                "unblock 'Unblock Shutdown' "
+                "test 'Send Test Alert' "
+                "quit 'Exit Tray' 2>/dev/null"
+            )
+            try:
+                proc = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, text=True)
+                choice, _ = proc.communicate()
+                choice = choice.strip()
+                if choice == "status":
+                    subprocess.Popen(["sys-guardian", "status"])
+                elif choice == "diagnose":
+                    subprocess.Popen(["x-terminal-emulator", "-e", "bash", "-c", "sys-guardian diagnose; read -p 'Press Enter to close...'"])
+                elif choice == "unblock":
+                    subprocess.Popen(["sys-guardian", "unblock"])
+                elif choice == "test":
+                    subprocess.Popen(["sys-guardian", "test"])
+                elif choice == "quit":
+                    sys.exit(0)
+            except Exception:
+                pass
+            invocation.return_value(None)
+        else:
+            invocation.return_value(None)
+
+    def on_get_property(self, connection, sender, path, iface, prop_name):
+        if prop_name == "Category":
+            return GLib.Variant("s", "Hardware")
+        elif prop_name == "Id":
+            return GLib.Variant("s", "sys-guardian")
+        elif prop_name == "Title":
+            return GLib.Variant("s", "Sys-Guardian")
+        elif prop_name == "Status":
+            return GLib.Variant("s", "NeedsAttention" if self.is_blocked else "Active")
+        elif prop_name == "WindowId":
+            return GLib.Variant("i", 0)
+        elif prop_name == "IconName":
+            return GLib.Variant("s", self.get_icon())
+        elif prop_name == "OverlayIconName":
+            return GLib.Variant("s", "")
+        elif prop_name == "AttentionIconName":
+            return GLib.Variant("s", "dialog-warning")
+        elif prop_name == "AttentionMovieName":
+            return GLib.Variant("s", "")
+        elif prop_name == "ToolTip":
+            return self.get_tooltip()
+        elif prop_name == "IconThemePath":
+            return GLib.Variant("s", "")
+        elif prop_name == "Menu":
+            return GLib.Variant("o", "/NO_DBUSMENU")
+        elif prop_name == "ItemIsMenu":
+            return GLib.Variant("b", False)
+        return None
+
+    def check_state(self):
+        new_state = find_lock() is not None
+        if new_state != self.is_blocked:
+            self.is_blocked = new_state
+            if self.con:
+                self.con.emit_signal(None, "/StatusNotifierItem", "org.kde.StatusNotifierItem", "NewIcon", None)
+                self.con.emit_signal(None, "/StatusNotifierItem", "org.kde.StatusNotifierItem", "NewToolTip", None)
+                self.con.emit_signal(
+                    None,
+                    "/StatusNotifierItem",
+                    "org.kde.StatusNotifierItem",
+                    "NewStatus",
+                    GLib.Variant("(s)", ("NeedsAttention" if self.is_blocked else "Active",))
+                )
+        return True
+
+    def start(self):
+        try:
+            self.con = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        except Exception as e:
+            print(f"Error connecting to Session D-Bus: {e}")
+            return 1
+
+        self.con.register_object(
+            "/StatusNotifierItem",
+            self.interface_info,
+            self.on_method_call,
+            self.on_get_property,
+            None
+        )
+
+        try:
+            self.con.call_sync(
+                "org.kde.StatusNotifierWatcher",
+                "/StatusNotifierWatcher",
+                "org.kde.StatusNotifierWatcher",
+                "RegisterStatusNotifierItem",
+                GLib.Variant("(s)", ("/StatusNotifierItem",)),
+                None,
+                Gio.DBusCallFlags.NONE,
+                -1,
+                None
+            )
+        except Exception:
+            try:
+                self.con.call_sync(
+                    "org.freedesktop.StatusNotifierWatcher",
+                    "/StatusNotifierWatcher",
+                    "org.freedesktop.StatusNotifierWatcher",
+                    "RegisterStatusNotifierItem",
+                    GLib.Variant("(s)", ("/StatusNotifierItem",)),
+                    None,
+                    Gio.DBusCallFlags.NONE,
+                    -1,
+                    None
+                )
+            except Exception:
+                pass
+
+        GLib.timeout_add_seconds(2, self.check_state)
+        self.check_state()
+
+        loop = GLib.MainLoop()
+        signal.signal(signal.SIGINT, lambda s, f: loop.quit())
+        signal.signal(signal.SIGTERM, lambda s, f: loop.quit())
+        loop.run()
+        return 0
+
+if __name__ == "__main__":
+    app = SysGuardianTray()
+    sys.exit(app.start())

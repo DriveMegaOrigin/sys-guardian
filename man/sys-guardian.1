@@ -1,0 +1,85 @@
+.TH SYS-GUARDIAN 1 "October 2026" "sys-guardian 3.1.0" "User Commands"
+.SH NAME
+sys-guardian \- system-wide hardware & integrity guardian for Linux
+.SH SYNOPSIS
+.B sys-guardian
+[\fICOMMAND\fR]
+.SH DESCRIPTION
+.B sys-guardian
+is an ultra-lightweight system daemon and CLI utility designed to proactively monitor Linux system integrity, VFIO / GPU passthrough stability, thermal limits, storage block I/O, and active package manager locks.
+.PP
+Installed as a native system service in
+.BR /etc/systemd/system/sys-guardian.service ,
+it listens directly to kernel ring buffer events in real-time (<1s latency). When a critical hardware failure (such as a GPU falling off the PCI bus) or dangerous state occurs,
+.B sys-guardian
+issues an instant desktop alert to the active graphical session, generates an actionable diagnosis, stores the incident in a persistent 2-record Blackbox in
+.BR /var/log/sys-guardian/ ,
+and temporarily locks power actions (shutdown/reboot) using
+.BR systemd-inhibit
+to prevent filesystem corruption and kernel panics on shutdown.
+.SH COMMANDS
+.TP
+.B status
+Displays the current system integrity status (\fBNORMAL\fR or \fBBLOCKED\fR).
+.TP
+.B check
+Performs an immediate one-shot scan across all sensors and logs.
+.TP
+.B diagnose
+Outputs detailed triage information including GPU status, PCI drivers, QEMU VM process states, DPKG locks, thermal zone readings, and active power inhibitors.
+.TP
+.B simulate \fI[gpu|oom|io]\fR
+Injects a simulated hardware failure into the kernel ring buffer to verify real-time alert and inhibitor triggers.
+.TP
+.B log-last
+Displays the latest incident report stored in the persistent Blackbox (/var/log/sys-guardian/crash_latest.log).
+.TP
+.B log-prev
+Displays the previous incident report stored in the Blackbox (/var/log/sys-guardian/crash_previous.log).
+.TP
+.B unblock
+Removes the current shutdown/reboot lock and releases the systemd inhibitor.
+.TP
+.B test
+Sends a test desktop notification to the currently active graphical session.
+.TP
+.B daemon
+Starts the continuous real-time monitor listening to kernel events via journal inotify.
+.TP
+.B version
+Displays version information.
+.TP
+.B help
+Displays the command-line help screen.
+.SH FILES
+.TP
+.I /etc/systemd/system/sys-guardian.service
+Systemd system service unit.
+.TP
+.I /usr/local/bin/sys-guardian
+Primary executable binary.
+.TP
+.I /usr/local/bin/sys-guardian-tray
+Desktop StatusNotifierItem tray indicator applet.
+.TP
+.I /var/log/sys-guardian/crash_latest.log
+Persistent report of the most recent critical incident.
+.TP
+.I /var/log/sys-guardian/crash_previous.log
+Persistent report of the preceding critical incident.
+.TP
+.I /run/sys-guardian/sys-guardian.lock
+Lock file generated when an integrity issue is detected.
+.SH EXIT STATUS
+.TP
+.B 0
+System is healthy, no active issues detected.
+.TP
+.B 1
+An issue was detected or power actions are blocked.
+.SH SEE ALSO
+.BR systemctl (1),
+.BR journalctl (1),
+.BR systemd-inhibit (1)
+.SH AUTHOR
+DriveMegaOrigin (https://github.com/DriveMegaOrigin/sys-guardian)

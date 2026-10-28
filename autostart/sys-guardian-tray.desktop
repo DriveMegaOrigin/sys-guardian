@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Sys-Guardian Tray
+Comment=Hardware and System Integrity Tray Indicator
+Exec=/usr/local/bin/sys-guardian-tray
+Icon=security-high
+Terminal=false
+Categories=System;Monitor;
+X-GNOME-Autostart-enabled=true
+X-KDE-autostart-after=panel

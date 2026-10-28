@@ -1,0 +1,28 @@
+# ==============================================================================
+# Bash Completion for Sys-Guardian
+# Location: /etc/bash_completion.d/sys-guardian
+# ==============================================================================
+
+_sys_guardian_completions() {
+    local cur prev words cword
+    _init_completion || return
+
+    local commands="status check diagnose simulate log-last log-prev unblock test daemon version help"
+    local simulate_args="gpu oom io"
+
+    if [ "$cword" -eq 1 ]; then
+        COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
+        return 0
+    fi
+
+    case "${words[1]}" in
+        simulate)
+            if [ "$cword" -eq 2 ]; then
+                COMPREPLY=( $(compgen -W "$simulate_args" -- "$cur") )
+                return 0
+            fi
+            ;;
+    esac
+}
+
+complete -F _sys_guardian_completions sys-guardian

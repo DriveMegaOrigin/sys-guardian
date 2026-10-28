@@ -93,8 +93,22 @@ if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
 fi
 echo -e "${GREEN}✓ Desktop systray registered (/etc/xdg/autostart/sys-guardian-tray.desktop)${RESET}"
 
-# 6. Manual Page & Polkit Compatibility Rule
-echo -e "\n${BOLD}[6/6] Installing manual page and power protection rules...${RESET}"
+# 6. Central Config & Bash Autocompletion (/etc/)
+echo -e "\n${BOLD}[6/7] Installing /etc configuration and bash completion...${RESET}"
+mkdir -p /etc/sys-guardian
+if [ ! -f "/etc/sys-guardian/sys-guardian.conf" ]; then
+    install -m 644 "$SCRIPT_DIR/etc/sys-guardian.conf" /etc/sys-guardian/sys-guardian.conf
+    echo -e "${GREEN}✓ Created configuration in /etc/sys-guardian/sys-guardian.conf${RESET}"
+else
+    echo -e "${CYAN}ℹ Preserved existing /etc/sys-guardian/sys-guardian.conf${RESET}"
+fi
+
+mkdir -p /etc/bash_completion.d
+install -m 644 "$SCRIPT_DIR/completions/sys-guardian" /etc/bash_completion.d/sys-guardian
+echo -e "${GREEN}✓ Installed bash completion in /etc/bash_completion.d/sys-guardian${RESET}"
+
+# 7. Manual Page & Polkit Compatibility Rule
+echo -e "\n${BOLD}[7/7] Installing manual page and power protection rules...${RESET}"
 if [ -d "/usr/local/share/man/man1" ] || mkdir -p "/usr/local/share/man/man1"; then
     install -m 644 "$SCRIPT_DIR/man/sys-guardian.1" /usr/local/share/man/man1/sys-guardian.1 2>/dev/null || true
     command -v mandb >/dev/null 2>&1 && mandb -q 2>/dev/null || true

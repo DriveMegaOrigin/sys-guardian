@@ -38,13 +38,15 @@ echo -e "\n${BOLD}[2/4] Removing executable binaries from /usr/local/bin...${RES
 rm -f /usr/local/bin/sys-guardian /usr/local/bin/sys-guardian-tray
 echo -e "${GREEN}✓ Binaries removed.${RESET}"
 
-# 3. Remove Desktop Autostart, Polkit, and Man Page
+# 3. Remove /etc Configs, Autostart, Completion, Polkit, and Man Page
 echo -e "\n${BOLD}[3/4] Removing system integrations...${RESET}"
 rm -f /etc/xdg/autostart/sys-guardian-tray.desktop
 rm -f /etc/polkit-1/rules.d/99-sysguardian.rules
+rm -f /etc/bash_completion.d/sys-guardian
+rm -rf /etc/sys-guardian
 rm -f /usr/local/share/man/man1/sys-guardian.1
 systemctl restart polkit 2>/dev/null || true
-echo -e "${GREEN}✓ Autostart, Polkit rules, and manual page removed.${RESET}"
+echo -e "${GREEN}✓ Autostart, /etc configurations, completion, and manual page removed.${RESET}"
 
 # 4. Remove Runtime and State Files
 echo -e "\n${BOLD}[4/4] Cleaning runtime states...${RESET}"

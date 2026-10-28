@@ -39,9 +39,23 @@ chmod 755 "$BLACKBOX_DIR" 2>/dev/null || true
 BLACKBOX_LATEST="${BLACKBOX_DIR}/crash_latest.log"
 BLACKBOX_PREV="${BLACKBOX_DIR}/crash_previous.log"
 
-# Warning Thresholds
+# Warning Thresholds (defaults overridden by /etc/sys-guardian/sys-guardian.conf)
 DISK_WARN_THRESHOLD=90
 TEMP_WARN_THRESHOLD=92
+PSI_STALL_THRESHOLD=40
+
+CONFIG_FILE="/etc/sys-guardian/sys-guardian.conf"
+if [ -r "$CONFIG_FILE" ]; then
+    while IFS='=' read -r key value; do
+        key=$(echo "$key" | tr -d '[:space:]')
+        value=$(echo "$value" | tr -d '[:space:]')
+        case "$key" in
+            disk_warn_threshold) DISK_WARN_THRESHOLD="$value" ;;
+            temp_warn_threshold) TEMP_WARN_THRESHOLD="$value" ;;
+            psi_stall_threshold) PSI_STALL_THRESHOLD="$value" ;;
+        esac
+    done < <(grep -E '^[a-zA-Z0-9_]+=' "$CONFIG_FILE" 2>/dev/null)
+fi
 
 # ANSI Colors
 RED="\033[1;31m"
@@ -123,6 +137,17 @@ send_alert() {
     local wayland_disp="${WAYLAND_DISPLAY:-wayland-0}"
     local x11_disp="${DISPLAY:-:0}"
 
+    local alert_action="
+if kdialog --title '🚨 $title (Sys-Guardian)' \
+           --warningyesno '$message\n\nWould you like to open the detailed diagnostic report?' \
+           --yes-label 'View Details' --no-label 'Ignore'; then
+    if [ -f '$GLOBAL_REPORT' ]; then
+        kdialog --title 'Sys-Guardian Diagnostic Report' --textbox '$GLOBAL_REPORT' 850 550 2>/dev/null || xdg-open '$GLOBAL_REPORT' 2>/dev/null || true
+    elif [ -f '$REPORT_FILE' ]; then
+        kdialog --title 'Sys-Guardian Diagnostic Report' --textbox '$REPORT_FILE' 850 550 2>/dev/null || xdg-open '$REPORT_FILE' 2>/dev/null || true
+    fi
+fi"
+
     if command -v kdialog >/dev/null 2>&1; then
         if [ "$(id -u)" -eq 0 ] && [ -n "$gui_user" ] && [ "$gui_user" != "root" ]; then
             sudo -u "$gui_user" \
@@ -130,13 +155,9 @@ send_alert() {
                 DBUS_SESSION_BUS_ADDRESS="$user_bus" \
                 DISPLAY="$x11_disp" \
                 WAYLAND_DISPLAY="$wayland_disp" \
-                kdialog --title "🚨 $title (Sys-Guardian)" \
-                        --warningyesno "$message\n\nWould you like to open the detailed diagnostic report?" \
-                        --yes-label "View Details" --no-label "Ignore" >/dev/null 2>&1 &
+                bash -c "$alert_action" >/dev/null 2>&1 &
         else
-            kdialog --title "🚨 $title (Sys-Guardian)" \
-                    --warningyesno "$message\n\nWould you like to open the detailed diagnostic report?" \
-                    --yes-label "View Details" --no-label "Ignore" >/dev/null 2>&1 &
+            bash -c "$alert_action" >/dev/null 2>&1 &
         fi
     elif command -v notify-send >/dev/null 2>&1; then
         if [ "$(id -u)" -eq 0 ] && [ -n "$gui_user" ] && [ "$gui_user" != "root" ]; then

@@ -110,32 +110,60 @@ class SysGuardianTray:
         return GLib.Variant("(sa(iiay)ss)", (icon, [], title, desc))
 
     def on_method_call(self, connection, sender, path, iface, method_name, params, invocation):
-        if method_name == "Activate":
+        if method_name in ("Activate", "SecondaryActivate"):
             report = find_report()
-            if report:
-                subprocess.Popen(["xdg-open", report])
+            if report and os.path.exists(report):
+                subprocess.Popen([
+                    "kdialog",
+                    "--title", "Sys-Guardian Diagnostic Report",
+                    "--textbox", report,
+                    "850", "550"
+                ])
             else:
-                subprocess.Popen(["sys-guardian", "status"])
+                try:
+                    out = subprocess.check_output(["sys-guardian", "status"], text=True, stderr=subprocess.STDOUT)
+                except subprocess.CalledProcessError as e:
+                    out = e.output or "System integrity alert!"
+                subprocess.Popen([
+                    "kdialog",
+                    "--title", "Sys-Guardian Status",
+                    "--msgbox", out
+                ])
             invocation.return_value(None)
         elif method_name == "ContextMenu":
             cmd = (
-                "kdialog --menu 'Sys-Guardian' "
-                "status 'View Status' "
+                "kdialog --menu '🛡️ Sys-Guardian' "
+                "status 'View Current Status' "
+                "report 'Open Detailed Report' "
                 "diagnose 'Run Diagnostic Triage' "
-                "unblock 'Unblock Shutdown' "
+                "unblock 'Unblock Shutdown / Clear Lock' "
                 "test 'Send Test Alert' "
                 "quit 'Exit Tray' 2>/dev/null"
             )
             try:
                 proc = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, text=True)
                 choice, _ = proc.communicate()
-                choice = choice.strip()
+                choice = choice.strip() if choice else ""
                 if choice == "status":
-                    subprocess.Popen(["sys-guardian", "status"])
+                    try:
+                        out = subprocess.check_output(["sys-guardian", "status"], text=True, stderr=subprocess.STDOUT)
+                    except subprocess.CalledProcessError as e:
+                        out = e.output or "System integrity alert!"
+                    subprocess.Popen(["kdialog", "--title", "Sys-Guardian Status", "--msgbox", out])
+                elif choice == "report":
+                    rep = find_report()
+                    if rep and os.path.exists(rep):
+                        subprocess.Popen(["kdialog", "--title", "Sys-Guardian Report", "--textbox", rep, "850", "550"])
+                    else:
+                        subprocess.Popen(["kdialog", "--title", "Sys-Guardian Report", "--msgbox", "No active error report found. System is clean!"])
                 elif choice == "diagnose":
-                    subprocess.Popen(["x-terminal-emulator", "-e", "bash", "-c", "sys-guardian diagnose; read -p 'Press Enter to close...'"])
+                    subprocess.Popen([
+                        "x-terminal-emulator", "-e", "bash", "-c",
+                        "sys-guardian diagnose; echo ''; read -p 'Press Enter to close...'"
+                    ])
                 elif choice == "unblock":
-                    subprocess.Popen(["sys-guardian", "unblock"])
+                    subprocess.call(["sys-guardian", "unblock"])
+                    subprocess.Popen(["kdialog", "--title", "Sys-Guardian", "--msgbox", "🔓 Shutdown lock and systemd inhibitor removed."])
                 elif choice == "test":
                     subprocess.Popen(["sys-guardian", "test"])
                 elif choice == "quit":

@@ -31,6 +31,7 @@ systemctl disable sys-guardian.service 2>/dev/null || true
 rm -f /etc/systemd/system/sys-guardian.service
 systemctl daemon-reload
 pkill -f sys-guardian-tray 2>/dev/null || true
+pkill -f "systemd-inhibit.*Sys-Guardian" 2>/dev/null || true
 echo -e "${GREEN}✓ Systemd system service stopped and removed.${RESET}"
 
 # 2. Remove Executable Binaries
@@ -42,7 +43,7 @@ echo -e "${GREEN}✓ Binaries removed.${RESET}"
 echo -e "\n${BOLD}[3/4] Removing system integrations...${RESET}"
 rm -f /etc/xdg/autostart/sys-guardian-tray.desktop
 rm -f /etc/polkit-1/rules.d/99-sysguardian.rules
-rm -f /etc/bash_completion.d/sys-guardian
+rm -f /etc/bash_completion.d/sys-guardian /usr/share/bash-completion/completions/sys-guardian
 rm -rf /etc/sys-guardian
 rm -f /usr/local/share/man/man1/sys-guardian.1
 systemctl restart polkit 2>/dev/null || true

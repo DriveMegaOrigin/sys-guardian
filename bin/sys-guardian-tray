@@ -10,6 +10,7 @@ import os
 import sys
 import subprocess
 import signal
+import shutil
 
 try:
     from gi.repository import GLib, Gio
@@ -39,11 +40,44 @@ def find_lock():
             return p
     return None
 
+def is_inhibited():
+    try:
+        out = subprocess.check_output(["systemd-inhibit", "--list"], stderr=subprocess.DEVNULL, text=True)
+        return "Sys-Guardian" in out
+    except Exception:
+        return False
+
 def find_report():
     for p in REPORT_CANDIDATES:
         if os.path.exists(p):
             return p
     return None
+
+def launch_terminal(cmd_str):
+    for term in ("x-terminal-emulator", "xdg-terminal-exec", "gnome-terminal", "konsole", "xfce4-terminal", "alacritty", "kitty", "foot"):
+        if shutil.which(term):
+            if term == "gnome-terminal":
+                subprocess.Popen([term, "--", "bash", "-c", f"{cmd_str}; echo ''; read -p 'Press Enter to close...'"])
+            else:
+                subprocess.Popen([term, "-e", "bash", "-c", f"{cmd_str}; echo ''; read -p 'Press Enter to close...'"])
+            return True
+    return False
+
+def show_msg_dialog(title, text):
+    if shutil.which("kdialog"):
+        subprocess.Popen(["kdialog", "--title", title, "--msgbox", text])
+    elif shutil.which("zenity"):
+        subprocess.Popen(["zenity", "--info", "--title", title, "--text", text])
+    else:
+        launch_terminal(f"echo -e {subprocess.list2cmdline([text])}")
+
+def show_file_dialog(title, filepath):
+    if shutil.which("kdialog"):
+        subprocess.Popen(["kdialog", "--title", title, "--textbox", filepath, "850", "550"])
+    elif shutil.which("zenity"):
+        subprocess.Popen(["zenity", "--text-info", "--title", title, "--filename", filepath, "--width=850", "--height=550"])
+    else:
+        launch_terminal(f"cat '{filepath}'")
 
 SNI_XML = """
 <node>
@@ -113,63 +147,73 @@ class SysGuardianTray:
         if method_name in ("Activate", "SecondaryActivate"):
             report = find_report()
             if report and os.path.exists(report):
-                subprocess.Popen([
-                    "kdialog",
-                    "--title", "Sys-Guardian Diagnostic Report",
-                    "--textbox", report,
-                    "850", "550"
-                ])
+                show_file_dialog("Sys-Guardian Diagnostic Report", report)
             else:
                 try:
                     out = subprocess.check_output(["sys-guardian", "status"], text=True, stderr=subprocess.STDOUT)
                 except subprocess.CalledProcessError as e:
                     out = e.output or "System integrity alert!"
-                subprocess.Popen([
-                    "kdialog",
-                    "--title", "Sys-Guardian Status",
-                    "--msgbox", out
-                ])
+                show_msg_dialog("Sys-Guardian Status", out)
             invocation.return_value(None)
         elif method_name == "ContextMenu":
-            cmd = (
-                "kdialog --menu '🛡️ Sys-Guardian' "
-                "status 'View Current Status' "
-                "report 'Open Detailed Report' "
-                "diagnose 'Run Diagnostic Triage' "
-                "unblock 'Unblock Shutdown / Clear Lock' "
-                "test 'Send Test Alert' "
-                "quit 'Exit Tray' 2>/dev/null"
-            )
-            try:
-                proc = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, text=True)
-                choice, _ = proc.communicate()
-                choice = choice.strip() if choice else ""
-                if choice == "status":
-                    try:
-                        out = subprocess.check_output(["sys-guardian", "status"], text=True, stderr=subprocess.STDOUT)
-                    except subprocess.CalledProcessError as e:
-                        out = e.output or "System integrity alert!"
-                    subprocess.Popen(["kdialog", "--title", "Sys-Guardian Status", "--msgbox", out])
-                elif choice == "report":
-                    rep = find_report()
-                    if rep and os.path.exists(rep):
-                        subprocess.Popen(["kdialog", "--title", "Sys-Guardian Report", "--textbox", rep, "850", "550"])
-                    else:
-                        subprocess.Popen(["kdialog", "--title", "Sys-Guardian Report", "--msgbox", "No active error report found. System is clean!"])
-                elif choice == "diagnose":
-                    subprocess.Popen([
-                        "x-terminal-emulator", "-e", "bash", "-c",
-                        "sys-guardian diagnose; echo ''; read -p 'Press Enter to close...'"
-                    ])
-                elif choice == "unblock":
-                    subprocess.call(["sys-guardian", "unblock"])
-                    subprocess.Popen(["kdialog", "--title", "Sys-Guardian", "--msgbox", "🔓 Shutdown lock and systemd inhibitor removed."])
-                elif choice == "test":
-                    subprocess.Popen(["sys-guardian", "test"])
-                elif choice == "quit":
-                    sys.exit(0)
-            except Exception:
-                pass
+            choice = ""
+            if shutil.which("kdialog"):
+                cmd = (
+                    "kdialog --menu '🛡️ Sys-Guardian' "
+                    "status 'View Current Status' "
+                    "report 'Open Detailed Report' "
+                    "diagnose 'Run Diagnostic Triage' "
+                    "unblock 'Unblock Shutdown / Clear Lock' "
+                    "test 'Send Test Alert' "
+                    "quit 'Exit Tray' 2>/dev/null"
+                )
+                try:
+                    proc = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, text=True)
+                    choice, _ = proc.communicate()
+                    choice = choice.strip() if choice else ""
+                except Exception:
+                    pass
+            elif shutil.which("zenity"):
+                cmd = [
+                    "zenity", "--list", "--title=🛡️ Sys-Guardian",
+                    "--column=ID", "--column=Action", "--hide-column=1",
+                    "status", "View Current Status",
+                    "report", "Open Detailed Report",
+                    "diagnose", "Run Diagnostic Triage",
+                    "unblock", "Unblock Shutdown / Clear Lock",
+                    "test", "Send Test Alert",
+                    "quit", "Exit Tray"
+                ]
+                try:
+                    choice = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True).strip()
+                except Exception:
+                    pass
+
+            if choice == "status":
+                try:
+                    out = subprocess.check_output(["sys-guardian", "status"], text=True, stderr=subprocess.STDOUT)
+                except subprocess.CalledProcessError as e:
+                    out = e.output or "System integrity alert!"
+                show_msg_dialog("Sys-Guardian Status", out)
+            elif choice == "report":
+                rep = find_report()
+                if rep and os.path.exists(rep):
+                    show_file_dialog("Sys-Guardian Report", rep)
+                else:
+                    show_msg_dialog("Sys-Guardian Report", "No active error report found. System is clean!")
+            elif choice == "diagnose":
+                launch_terminal("sys-guardian diagnose")
+            elif choice == "unblock":
+                ret = subprocess.call(["sys-guardian", "unblock"])
+                if ret == 0:
+                    show_msg_dialog("Sys-Guardian", "🔓 Shutdown lock and systemd inhibitor removed.")
+                else:
+                    show_msg_dialog("Sys-Guardian", "Unable to release lock (cancelled or privileges required).")
+            elif choice == "test":
+                subprocess.Popen(["sys-guardian", "test"])
+            elif choice == "quit":
+                sys.exit(0)
+
             invocation.return_value(None)
         else:
             invocation.return_value(None)
@@ -204,7 +248,7 @@ class SysGuardianTray:
         return None
 
     def check_state(self):
-        new_state = find_lock() is not None
+        new_state = (find_lock() is not None) or is_inhibited()
         if new_state != self.is_blocked:
             self.is_blocked = new_state
             if self.con:

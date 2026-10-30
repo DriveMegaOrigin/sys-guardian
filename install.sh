@@ -39,10 +39,19 @@ for cmd in systemctl journalctl awk grep sed python3; do
         exit 1
     fi
 done
-echo -e "${GREEN}✓ All dependencies verified.${RESET}"
+
+if ! python3 -c "import gi; from gi.repository import GLib, Gio" >/dev/null 2>&1; then
+    echo -e "${YELLOW}Notice: PyGObject (GLib/Gio) is not detected for python3.${RESET}"
+    echo -e "The systray applet requires PyGObject. Install it if needed:"
+    echo -e "  - Debian/Ubuntu: sudo apt install python3-gi"
+    echo -e "  - Arch Linux:    sudo pacman -S python-gobject"
+    echo -e "  - Fedora:        sudo dnf install python3-gobject"
+fi
+echo -e "${GREEN}✓ System dependencies verified.${RESET}"
 
 # 2. Clean Up Any Old Broken Links
 echo -e "\n${BOLD}[2/6] Cleaning legacy configurations...${RESET}"
+pkill -f "systemd-inhibit.*Sys-Guardian" 2>/dev/null || true
 if [ -L "/usr/local/bin/sys-guardian" ]; then
     rm -f /usr/local/bin/sys-guardian
 fi
@@ -83,17 +92,19 @@ echo -e "\n${BOLD}[5/6] Configuring Desktop Tray Autostart (/etc/xdg/autostart).
 mkdir -p /etc/xdg/autostart
 install -m 644 "$SCRIPT_DIR/autostart/sys-guardian-tray.desktop" /etc/xdg/autostart/sys-guardian-tray.desktop
 
-# Launch tray applet immediately for active desktop user if available
+# Launch tray applet immediately for active desktop user if available and not already running
 if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
     TARGET_UID="$(id -u "$SUDO_USER")"
-    sudo -u "$SUDO_USER" \
-        XDG_RUNTIME_DIR="/run/user/$TARGET_UID" \
-        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$TARGET_UID/bus" \
-        nohup /usr/local/bin/sys-guardian-tray >/dev/null 2>&1 &
+    if ! pgrep -u "$TARGET_UID" -f "sys-guardian-tray" >/dev/null 2>&1; then
+        sudo -u "$SUDO_USER" \
+            XDG_RUNTIME_DIR="/run/user/$TARGET_UID" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$TARGET_UID/bus" \
+            nohup /usr/local/bin/sys-guardian-tray >/dev/null 2>&1 &
+    fi
 fi
 echo -e "${GREEN}✓ Desktop systray registered (/etc/xdg/autostart/sys-guardian-tray.desktop)${RESET}"
 
-# 6. Central Config & Bash Autocompletion (/etc/)
+# 6. Central Config & Bash Autocompletion (/etc/ or /usr/share/)
 echo -e "\n${BOLD}[6/7] Installing /etc configuration and bash completion...${RESET}"
 mkdir -p /etc/sys-guardian
 if [ ! -f "/etc/sys-guardian/sys-guardian.conf" ]; then
@@ -103,9 +114,13 @@ else
     echo -e "${CYAN}ℹ Preserved existing /etc/sys-guardian/sys-guardian.conf${RESET}"
 fi
 
-mkdir -p /etc/bash_completion.d
-install -m 644 "$SCRIPT_DIR/completions/sys-guardian" /etc/bash_completion.d/sys-guardian
-echo -e "${GREEN}✓ Installed bash completion in /etc/bash_completion.d/sys-guardian${RESET}"
+COMP_DIR="/etc/bash_completion.d"
+if [ -d "/usr/share/bash-completion/completions" ]; then
+    COMP_DIR="/usr/share/bash-completion/completions"
+fi
+mkdir -p "$COMP_DIR"
+install -m 644 "$SCRIPT_DIR/completions/sys-guardian" "$COMP_DIR/sys-guardian"
+echo -e "${GREEN}✓ Installed bash completion in $COMP_DIR/sys-guardian${RESET}"
 
 # 7. Manual Page & Polkit Compatibility Rule
 echo -e "\n${BOLD}[7/7] Installing manual page and power protection rules...${RESET}"

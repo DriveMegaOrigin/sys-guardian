@@ -9,7 +9,7 @@ Type=simple
 ExecStart=/usr/local/bin/sys-guardian daemon
 Restart=always
 RestartSec=5
-KillMode=process
+KillMode=mixed
 
 # Systemd directory management
 RuntimeDirectory=sys-guardian

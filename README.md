@@ -74,6 +74,7 @@ sys-guardian <COMMAND>
 | `sys-guardian simulate io` | Inject a test storage block I/O error into kernel logs. |
 | `sys-guardian log-last` | Display the latest crash report from `/var/log/sys-guardian/crash_latest.log`. |
 | `sys-guardian log-prev` | Display the preceding crash report from the Blackbox. |
+| `sys-guardian ignore` | Mute current alerts & release inhibitor until new errors appear. |
 | `sys-guardian unblock` | Manually dismiss the shutdown/reboot lock to allow system power actions. |
 | `sys-guardian test` | Send a test desktop alert to the active graphical session. |
 | `sys-guardian daemon` | Run the continuous background listener (< 1s latency). |

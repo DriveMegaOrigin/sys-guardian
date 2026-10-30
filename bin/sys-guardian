@@ -7,7 +7,7 @@
 
 set -o pipefail
 
-VERSION="3.1.0"
+VERSION="3.2.0"
 
 # Standard System FHS Paths
 if [ -d "/run/sys-guardian" ]; then
@@ -25,6 +25,8 @@ REPORT_FILE="${RUNTIME_DIR}/report.txt"
 GLOBAL_REPORT="/tmp/sys-guardian-report.txt"
 RAW_FILE="${RUNTIME_DIR}/raw.tmp"
 STATE_HASH_FILE="${RUNTIME_DIR}/last_hash"
+IGNORED_HASH_FILE="${RUNTIME_DIR}/ignored_hash"
+IGNORED_FLAG_FILE="${RUNTIME_DIR}/ignored"
 INHIBIT_PID_FILE="${RUNTIME_DIR}/inhibit.pid"
 
 # Persistent Blackbox (Standard Linux /var/log location, fallback to runtime)
@@ -82,14 +84,15 @@ RESET="\033[0m"
 # Systemd Native Inhibitor Lock Management (Zero Root, Native Desktop Prompt)
 # ------------------------------------------------------------------------------
 start_inhibitor() {
-    local reason="${1:-System stability risk or update in progress}"
+    local reason="${1:-System update in progress}"
     if command -v systemd-inhibit >/dev/null 2>&1; then
         if [ ! -f "$INHIBIT_PID_FILE" ] || ! kill -0 "$(cat "$INHIBIT_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+            # Mode=delay prevents black-screen TTY lockups; shutdown only (never sleep/lid)
             systemd-inhibit --what=shutdown \
                             --who="Sys-Guardian" \
                             --why="$reason (unblock via tray icon or run: sys-guardian unblock)" \
-                            --mode=block \
-                            sleep infinity >/dev/null 2>&1 &
+                            --mode=delay \
+                            sleep 45 >/dev/null 2>&1 &
             echo $! > "$INHIBIT_PID_FILE"
         fi
     fi
@@ -152,10 +155,28 @@ send_alert() {
     local x11_disp="${DISPLAY:-:0}"
 
     local alert_action="
-if command -v notify-send >/dev/null 2>&1; then
+if command -v kdialog >/dev/null 2>&1; then
+    if kdialog --title '🚨 $title (Sys-Guardian)' \
+               --warningyesno '$message\n\nWould you like to open the detailed diagnostic report?' \
+               --yes-label 'View Details' --no-label 'Ignore'; then
+        rep='$GLOBAL_REPORT'
+        [ ! -f \"\$rep\" ] && rep='$REPORT_FILE'
+        if [ -f \"\$rep\" ]; then
+            kdialog --title 'Sys-Guardian Diagnostic Report' \
+                    --warningyesno \"\$(cat \"\$rep\")\" \
+                    --yes-label 'Close' \
+                    --no-label 'Ignore These Issues' 850 550 2>/dev/null
+            if [ \$? -eq 1 ]; then
+                sys-guardian ignore 2>/dev/null || true
+                kdialog --title 'Sys-Guardian' --passivepopup '✓ Current issues ignored. Alerts muted.' 4 2>/dev/null || true
+            fi
+        fi
+    else
+        sys-guardian ignore 2>/dev/null || true
+        kdialog --title 'Sys-Guardian' --passivepopup '✓ Current issues ignored. Alerts muted.' 4 2>/dev/null || true
+    fi
+elif command -v notify-send >/dev/null 2>&1; then
     notify-send -a 'Sys-Guardian' -u '$urgency' '🚨 $title' '$message\n(Report: $GLOBAL_REPORT)' -i dialog-warning
-elif command -v kdialog >/dev/null 2>&1; then
-    kdialog --title '🚨 $title (Sys-Guardian)' --passivepopup '$message' 10 2>/dev/null || true
 elif command -v zenity >/dev/null 2>&1; then
     zenity --notification --text='🚨 $title: $message' 2>/dev/null || true
 fi"
@@ -249,6 +270,7 @@ check_memory_pressure() {
 # ------------------------------------------------------------------------------
 run_check() {
     local error_found=0
+    local pkg_busy=0
     local alert_title="CRITICAL ISSUE DETECTED"
     local alert_summary=""
 
@@ -271,6 +293,7 @@ run_check() {
 
         if [ "$pkg_lock_active" -eq 1 ]; then
             error_found=1
+            pkg_busy=1
             alert_title="SYSTEM UPDATE IN PROGRESS"
             alert_summary="A package manager is currently writing files.\nShutdown paused to prevent package database corruption.\nWait for completion or run 'sys-guardian unblock'."
             echo "=== [ACTIVE PACKAGE MANAGER WRITE LOCK DETECTED] ===" >> "$RAW_FILE"
@@ -367,9 +390,6 @@ run_check() {
 
     # Evaluation & Lock Handling
     if [ $error_found -eq 1 ]; then
-        touch "$LOCK_FILE"
-        chmod 644 "$LOCK_FILE" 2>/dev/null || true
-
         local current_hash
         current_hash=$(md5sum "$RAW_FILE" 2>/dev/null | awk '{print $1}')
         local last_hash=""
@@ -383,14 +403,33 @@ Timestamp: $(date)
 Host: $(hostname) | Kernel: $(uname -r)
 ==================================================
 $(cat "$RAW_FILE")
-Protection: SYSTEM SHUTDOWN / REBOOT IS LOCKED.
-To manually release the lock run: sys-guardian unblock
+Status: Issues detected.
+To ignore current issues: sys-guardian ignore
+To unblock lock: sys-guardian unblock
 ==================================================
 EOF
 )
         echo "$full_report" > "$REPORT_FILE" 2>/dev/null || true
         echo "$full_report" > "$GLOBAL_REPORT" 2>/dev/null || true
         chmod 644 "$REPORT_FILE" "$GLOBAL_REPORT" 2>/dev/null || true
+
+        # Check if the user has ignored this exact error state
+        local ignored_hash=""
+        [ -f "$IGNORED_HASH_FILE" ] && ignored_hash=$(cat "$IGNORED_HASH_FILE" 2>/dev/null)
+
+        if [ -n "$ignored_hash" ] && [ "$current_hash" = "$ignored_hash" ]; then
+            # Current issues are IGNORED (acknowledged & muted)
+            touch "$IGNORED_FLAG_FILE"
+            rm -f "$LOCK_FILE"
+            stop_inhibitor
+            rm -f "$RAW_FILE"
+            return 0
+        fi
+
+        # New or different issues! Clear old ignore state
+        rm -f "$IGNORED_FLAG_FILE" "$IGNORED_HASH_FILE" 2>/dev/null || true
+        touch "$LOCK_FILE"
+        chmod 644 "$LOCK_FILE" 2>/dev/null || true
 
         # Notify and rotate into persistent blackbox only if the incident is new
         if [ "$current_hash" != "$last_hash" ]; then
@@ -399,13 +438,18 @@ EOF
             send_alert "$alert_title" "$alert_summary"
         fi
 
-        start_inhibitor "$alert_title: $(echo "$alert_summary" | head -n 1)"
+        # Only inhibit shutdown if package manager is actually writing files to protect DB integrity!
+        if [ $pkg_busy -eq 1 ]; then
+            start_inhibitor "$alert_title: $(echo "$alert_summary" | head -n 1)"
+        else
+            stop_inhibitor
+        fi
 
         rm -f "$RAW_FILE"
         return 1
     else
         stop_inhibitor
-        rm -f "$LOCK_FILE" "$STATE_HASH_FILE" "$RAW_FILE" "$GLOBAL_REPORT" 2>/dev/null || true
+        rm -f "$LOCK_FILE" "$STATE_HASH_FILE" "$RAW_FILE" "$GLOBAL_REPORT" "$IGNORED_HASH_FILE" "$IGNORED_FLAG_FILE" 2>/dev/null || true
         return 0
     fi
 }
@@ -566,10 +610,37 @@ run_status() {
             echo -e "Run 'sys-guardian unblock' to clean up."
         fi
         return 1
+    elif [ -f "$IGNORED_FLAG_FILE" ]; then
+        echo -e "${YELLOW}🟡 STATUS: IGNORED (Issues acknowledged & muted)${RESET}"
+        if [ -f "$REPORT_FILE" ]; then
+            cat "$REPORT_FILE"
+        elif [ -f "$GLOBAL_REPORT" ]; then
+            cat "$GLOBAL_REPORT"
+        fi
+        return 0
     else
         echo -e "${GREEN}🟢 STATUS: NORMAL (System healthy & shutdown free)${RESET}"
         return 0
     fi
+}
+
+run_ignore() {
+    mkdir -p "$RUNTIME_DIR" 2>/dev/null
+    local h=""
+    if [ -f "$RAW_FILE" ]; then
+        h=$(md5sum "$RAW_FILE" 2>/dev/null | awk '{print $1}')
+    elif [ -f "$STATE_HASH_FILE" ]; then
+        h=$(cat "$STATE_HASH_FILE" 2>/dev/null)
+    elif [ -f "$REPORT_FILE" ]; then
+        h=$(md5sum "$REPORT_FILE" 2>/dev/null | awk '{print $1}')
+    fi
+    [ -z "$h" ] && h="manual_ignored_$(date +%s)"
+    echo "$h" > "$IGNORED_HASH_FILE"
+    touch "$IGNORED_FLAG_FILE"
+    rm -f "$LOCK_FILE"
+    stop_inhibitor
+    echo -e "${GREEN}✓ Current issues have been ignored.${RESET}"
+    echo -e "Alerts are muted and shutdown is free. New or different issues will alert normally."
 }
 
 run_unblock() {
@@ -598,7 +669,7 @@ run_unblock() {
     fi
 
     stop_inhibitor
-    rm -f "$LOCK_FILE" "$STATE_HASH_FILE" "$RAW_FILE" "$GLOBAL_REPORT" 2>/dev/null || true
+    rm -f "$LOCK_FILE" "$STATE_HASH_FILE" "$RAW_FILE" "$GLOBAL_REPORT" "$IGNORED_HASH_FILE" "$IGNORED_FLAG_FILE" 2>/dev/null || true
     pkill -f "systemd-inhibit.*Sys-Guardian" 2>/dev/null || true
     echo -e "${GREEN}🔓 Shutdown lock and systemd inhibitor successfully removed.${RESET}"
 }
@@ -613,9 +684,10 @@ ${BOLD}USAGE:${RESET}
     sys-guardian <COMMAND>
 
 ${BOLD}COMMANDS:${RESET}
-    ${CYAN}status${RESET}       Check current health status (${GREEN}🟢 NORMAL${RESET} / ${RED}🔴 BLOCKED${RESET})
+    ${CYAN}status${RESET}       Check current health status (${GREEN}🟢 NORMAL${RESET} / ${YELLOW}🟡 IGNORED${RESET} / ${RED}🔴 BLOCKED${RESET})
     ${CYAN}check${RESET}        Run an immediate one-shot scan of all sensors
     ${CYAN}diagnose${RESET}     Deep triage: GPUs, VFIO drivers, zombie VMs, locks, and thermals
+    ${CYAN}ignore${RESET}       Ignore current issues and mute alerts until new errors appear
     ${CYAN}log-last${RESET}     View the latest crash report stored in the persistent Blackbox
     ${CYAN}log-prev${RESET}     View the previous crash report from the Blackbox
     ${CYAN}unblock${RESET}      Manually remove shutdown/reboot lock
@@ -628,12 +700,13 @@ ${BOLD}COMMANDS:${RESET}
 ${BOLD}EXAMPLES:${RESET}
     sys-guardian status        # Check if the system is healthy and shutdown is unlocked
     sys-guardian diagnose      # Inspect hardware drivers and running VM states
+    sys-guardian ignore        # Mute current alerts and release inhibitor until new errors appear
     sys-guardian simulate gpu  # Inject test GPU bus-drop event to verify detection
     sys-guardian unblock       # Manually dismiss lock to reboot anyway
     sys-guardian log-last      # Read what caused the last crash after rebooting
 
 ${BOLD}EXIT CODES:${RESET}
-    0 = System is healthy and shutdown is free
+    0 = System is healthy or issues ignored
     1 = Issue detected or shutdown is blocked
 
 Report issues: https://github.com/DriveMegaOrigin/sys-guardian"
@@ -653,6 +726,9 @@ case "$1" in
     status)
         run_status
         exit $?
+        ;;
+    ignore)
+        run_ignore
         ;;
     diagnose)
         run_diagnose

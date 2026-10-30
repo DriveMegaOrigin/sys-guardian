@@ -24,15 +24,29 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-# 1. Stop and Disable System Service
-echo -e "${BOLD}[1/4] Stopping background system service...${RESET}"
+# 1. Stop and Disable System and User Services, Kill Running Processes
+echo -e "${BOLD}[1/4] Stopping background services and processes...${RESET}"
 systemctl stop sys-guardian.service 2>/dev/null || true
 systemctl disable sys-guardian.service 2>/dev/null || true
 rm -f /etc/systemd/system/sys-guardian.service
 systemctl daemon-reload
-pkill -f sys-guardian-tray 2>/dev/null || true
+
+# Kill all daemon, tray, and inhibitor processes
 pkill -f "systemd-inhibit.*Sys-Guardian" 2>/dev/null || true
-echo -e "${GREEN}✓ Systemd system service stopped and removed.${RESET}"
+pkill -f "sys-guardian-tray" 2>/dev/null || true
+pkill -f "sys-guardian" 2>/dev/null || true
+
+# Clean legacy user services if present
+if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+    TARGET_UID=$(id -u "$SUDO_USER" 2>/dev/null)
+    sudo -u "$SUDO_USER" XDG_RUNTIME_DIR="/run/user/$TARGET_UID" systemctl --user stop sys-guardian.service sys-guardian-tray.service 2>/dev/null || true
+    sudo -u "$SUDO_USER" XDG_RUNTIME_DIR="/run/user/$TARGET_UID" systemctl --user disable sys-guardian.service sys-guardian-tray.service 2>/dev/null || true
+    TARGET_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+    rm -f "$TARGET_HOME/.config/systemd/user/sys-guardian.service" "$TARGET_HOME/.config/systemd/user/sys-guardian-tray.service"
+    rm -f "$TARGET_HOME/.config/autostart/sys-guardian-tray.desktop"
+    rm -rf "$TARGET_HOME/.local/share/sys-guardian"
+fi
+echo -e "${GREEN}✓ All services stopped and processes terminated.${RESET}"
 
 # 2. Remove Executable Binaries
 echo -e "\n${BOLD}[2/4] Removing executable binaries from /usr/local/bin...${RESET}"
@@ -46,12 +60,15 @@ rm -f /etc/polkit-1/rules.d/99-sysguardian.rules
 rm -f /etc/bash_completion.d/sys-guardian /usr/share/bash-completion/completions/sys-guardian
 rm -rf /etc/sys-guardian
 rm -f /usr/local/share/man/man1/sys-guardian.1
+command -v mandb >/dev/null 2>&1 && mandb -q 2>/dev/null || true
 systemctl restart polkit 2>/dev/null || true
-echo -e "${GREEN}✓ Autostart, /etc configurations, completion, and manual page removed.${RESET}"
+echo -e "${GREEN}✓ Autostart, /etc configurations, completion, polkit rule, and manual page removed.${RESET}"
 
-# 4. Remove Runtime and State Files
-echo -e "\n${BOLD}[4/4] Cleaning runtime states...${RESET}"
-rm -rf /run/sys-guardian /tmp/sys-guardian* /tmp/sys-guardian-report.txt
+# 4. Remove Runtime, Logs, and State Files
+echo -e "\n${BOLD}[4/4] Cleaning runtime states and logs...${RESET}"
+rm -rf /run/sys-guardian /var/log/sys-guardian /tmp/sys-guardian* /tmp/sys-guardian-report.txt /run/user/*/sys-guardian*
 
-echo -e "\n${GREEN}${BOLD}✓ Sys-Guardian successfully uninstalled from the system.${RESET}"
-echo -e "(Incident history in /var/log/sys-guardian/ was preserved. Remove manually if desired)."
+echo -e "\n${GREEN}${BOLD}==================================================${RESET}"
+echo -e "${GREEN}${BOLD}✓ Sys-Guardian was completely uninstalled!${RESET}"
+echo -e "${GREEN}${BOLD}==================================================${RESET}"
+echo -e "All services, binaries, polkit rules, configurations, and logs were removed 100%."

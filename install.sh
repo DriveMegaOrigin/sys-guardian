@@ -144,6 +144,7 @@ echo -e "${GREEN}${BOLD}==================================================${RESE
 echo -e "\n${BOLD}Quick Verification:${RESET}"
 echo -e "  ${CYAN}sys-guardian status${RESET}        - Check system integrity & power locks"
 echo -e "  ${CYAN}sys-guardian diagnose${RESET}      - Hardware, GPU, and VM triage"
+echo -e "  ${CYAN}sys-guardian ignore${RESET}        - Mute current alerts & unlock shutdown"
 echo -e "  ${CYAN}sys-guardian test${RESET}          - Send a test alert to your desktop"
 echo -e "  ${CYAN}sys-guardian simulate gpu${RESET}  - Simulate a GPU bus-drop event"
 echo -e "  ${CYAN}sys-guardian log-last${RESET}      - View the persistent Blackbox (/var/log/sys-guardian/)"

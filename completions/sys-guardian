@@ -7,7 +7,7 @@ _sys_guardian_completions() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="status check diagnose simulate log-last log-prev unblock test daemon version help"
+    local commands="status check diagnose ignore simulate log-last log-prev unblock test daemon version help"
     local simulate_args="gpu oom io"
 
     if [ "$cword" -eq 1 ]; then

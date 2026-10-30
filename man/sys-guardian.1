@@ -40,6 +40,9 @@ Displays the previous incident report stored in the Blackbox (/var/log/sys-guard
 .B unblock
 Removes the current shutdown/reboot lock and releases the systemd inhibitor.
 .TP
+.B ignore
+Acknowledges and mutes current errors, releasing shutdown inhibitors until new or different errors appear.
+.TP
 .B test
 Sends a test desktop notification to the currently active graphical session.
 .TP

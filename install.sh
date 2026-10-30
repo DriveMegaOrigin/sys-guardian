@@ -122,18 +122,19 @@ mkdir -p "$COMP_DIR"
 install -m 644 "$SCRIPT_DIR/completions/sys-guardian" "$COMP_DIR/sys-guardian"
 echo -e "${GREEN}✓ Installed bash completion in $COMP_DIR/sys-guardian${RESET}"
 
-# 7. Manual Page & Polkit Compatibility Rule
-echo -e "\n${BOLD}[7/7] Installing manual page and power protection rules...${RESET}"
+# 7. Manual Page & Native Power Inhibition Cleanup
+echo -e "\n${BOLD}[7/7] Installing manual page and verifying desktop integration...${RESET}"
 if [ -d "/usr/local/share/man/man1" ] || mkdir -p "/usr/local/share/man/man1"; then
     install -m 644 "$SCRIPT_DIR/man/sys-guardian.1" /usr/local/share/man/man1/sys-guardian.1 2>/dev/null || true
     command -v mandb >/dev/null 2>&1 && mandb -q 2>/dev/null || true
     echo -e "${GREEN}✓ Manual page installed (run: man sys-guardian)${RESET}"
 fi
 
-if [ -d "/etc/polkit-1/rules.d" ]; then
-    install -m 644 "$SCRIPT_DIR/polkit/99-sysguardian.rules" /etc/polkit-1/rules.d/99-sysguardian.rules 2>/dev/null || true
+# Clean up legacy Polkit rule (systemd-inhibit provides native non-destructive GUI prompts without black screen lockouts)
+if [ -f "/etc/polkit-1/rules.d/99-sysguardian.rules" ]; then
+    rm -f /etc/polkit-1/rules.d/99-sysguardian.rules
     systemctl restart polkit 2>/dev/null || true
-    echo -e "${GREEN}✓ Polkit power protection rule active (/etc/polkit-1/rules.d/)${RESET}"
+    echo -e "${GREEN}✓ Cleaned legacy Polkit rule (desktop prompts handled natively via systemd-inhibit)${RESET}"
 fi
 
 echo -e "\n${GREEN}${BOLD}==================================================${RESET}"

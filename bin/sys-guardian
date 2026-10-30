@@ -87,7 +87,7 @@ start_inhibitor() {
         if [ ! -f "$INHIBIT_PID_FILE" ] || ! kill -0 "$(cat "$INHIBIT_PID_FILE" 2>/dev/null)" 2>/dev/null; then
             systemd-inhibit --what=shutdown \
                             --who="Sys-Guardian" \
-                            --why="$reason" \
+                            --why="$reason (unblock via tray icon or run: sys-guardian unblock)" \
                             --mode=block \
                             sleep infinity >/dev/null 2>&1 &
             echo $! > "$INHIBIT_PID_FILE"
@@ -272,9 +272,10 @@ run_check() {
         if [ "$pkg_lock_active" -eq 1 ]; then
             error_found=1
             alert_title="SYSTEM UPDATE IN PROGRESS"
-            alert_summary="A package manager is currently writing files.\nDo NOT power off or reboot now!"
+            alert_summary="A package manager is currently writing files.\nShutdown paused to prevent package database corruption.\nWait for completion or run 'sys-guardian unblock'."
             echo "=== [ACTIVE PACKAGE MANAGER WRITE LOCK DETECTED] ===" >> "$RAW_FILE"
             echo "Active processes: $(pgrep -a -E 'apt|apt-get|dpkg|pacman|dnf' 2>/dev/null)" >> "$RAW_FILE"
+            echo "Protection: Shutdown paused to prevent package corruption. Unblock via tray icon or: sys-guardian unblock" >> "$RAW_FILE"
             echo "--------------------------------------------------" >> "$RAW_FILE"
         fi
     fi
@@ -321,14 +322,15 @@ run_check() {
 
         if [ -n "$crit_gpu" ] || [ -n "$crit_virt" ]; then
             error_found=1
-            alert_title="GPU / VIRTUALIZATION CRASH"
-            alert_summary="Graphics card fell off the bus or VFIO/QEMU failed!\nSave your work immediately."
+            alert_title="GPU / HARDWARE CRASH DETECTED"
+            alert_summary="Graphics card fell off the bus or VFIO crashed!\nShutdown paused to prevent console black screen lockups.\nTo unblock, use the tray icon or run 'sys-guardian unblock'."
             echo "=== [CRITICAL GPU / VIRTUALIZATION CRASH] ===" >> "$RAW_FILE"
             [ -n "$crit_gpu" ] && echo -e "GPU Driver Logs:\n$crit_gpu\n" >> "$RAW_FILE"
             [ -n "$crit_virt" ] && echo -e "Virtualization Kernel Logs:\n$crit_virt\n" >> "$RAW_FILE"
             echo "Recommended Immediate Actions:" >> "$RAW_FILE"
             echo "1. Save all open work in host applications." >> "$RAW_FILE"
-            echo "2. Do not attempt to launch new VMs before cleanly rebooting." >> "$RAW_FILE"
+            echo "2. Protection is active to prevent hard freezes during reboot." >> "$RAW_FILE"
+            echo "3. To force reboot or shutdown anyway, click the tray shield or run: sys-guardian unblock" >> "$RAW_FILE"
             echo "--------------------------------------------------" >> "$RAW_FILE"
         fi
     fi
@@ -342,7 +344,7 @@ run_check() {
         if [ -n "$io_errors" ]; then
             error_found=1
             alert_title="STORAGE I/O ERROR DETECTED"
-            alert_summary="Filesystem or storage drive reported read/write block errors!"
+            alert_summary="Filesystem or storage drive reported read/write block errors!\nShutdown paused to safeguard data integrity.\nTo unblock, use the tray icon or run 'sys-guardian unblock'."
             echo "=== [STORAGE / FILESYSTEM I/O ERRORS] ===" >> "$RAW_FILE"
             echo "$io_errors" >> "$RAW_FILE"
             echo "--------------------------------------------------" >> "$RAW_FILE"

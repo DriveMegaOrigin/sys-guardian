@@ -31,6 +31,13 @@ If you run **GPU Passthrough (VFIO/QEMU)**, discrete graphics cards (NVIDIA/AMD)
 
 ## 🚀 1-Click System Installation
 
+### Prerequisites (Desktop Systray)
+The core daemon is pure Bash and has zero external dependencies. The optional desktop systray requires PyGObject:
+* **Debian / Ubuntu**: `sudo apt install python3-gi`
+* **Arch Linux**: `sudo pacman -S python-gobject`
+* **Fedora**: `sudo dnf install python3-gobject`
+
+### Installation
 Clone the repository and run the installer with `sudo`:
 
 ```bash
@@ -42,9 +49,10 @@ sudo ./install.sh
 The installer automatically:
 - Installs `sys-guardian` and `sys-guardian-tray` directly into `/usr/local/bin/` with mode `755`.
 - Configures and enables the system daemon in `/etc/systemd/system/sys-guardian.service` (starts automatically at boot).
-- Sets up desktop autostart in `/etc/xdg/autostart/sys-guardian-tray.desktop` for all graphical users.
+- Sets up desktop autostart in `/etc/xdg/autostart/sys-guardian-tray.desktop` for graphical users (KDE Plasma, GNOME, XFCE).
 - Creates the persistent Blackbox log directory in `/var/log/sys-guardian/`.
-- Installs the official manual page (`man sys-guardian`).
+- Configures central thresholds in `/etc/sys-guardian/sys-guardian.conf`.
+- Installs shell auto-completion and the official manual page (`man sys-guardian`).
 
 ---
 
@@ -107,12 +115,13 @@ No active package manager locks detected.
 
 | Subsystem | What it monitors | Action on Failure |
 | :--- | :--- | :--- |
-| **🎮 GPU & VFIO** | `NVRM: Xid`, `fallen off the bus`, AMDGPU reset, GPU hang, QEMU crashes. | Instant alert + Shutdown lock |
-| **📦 Package Managers** | Active `apt`, `dpkg`, `pacman`, `dnf` processes. | Instant alert + Shutdown lock |
+| **🎮 GPU & VFIO** | `NVRM: Xid`, `fallen off the bus`, AMDGPU reset, GPU hang, VFIO reset timeout. | Instant alert + Shutdown lock |
+| **📦 Package Managers** | Active package database write locks (DPKG, Pacman, RPM/DNF, Zypper). | Instant alert + Shutdown lock |
 | **💾 Storage & Filesystem** | Kernel block I/O errors (`EXT4-fs`, `BTRFS: error`, buffer I/O). | Instant alert + Shutdown lock |
-| **💽 Root Disk Capacity** | Partitions reaching ≥ 90% capacity. | Warning alert |
-| **🌡️ Thermal Protection** | Direct reading from `/sys/class/thermal/` (> 92°C). | Hardware warning alert |
-| **🧠 Memory Pressure** | Linux PSI (`/proc/pressure/memory`) stall detection before OOM freeze. | Pre-OOM thrashing warning |
+| **💽 Root Disk Capacity** | Partitions reaching ≥ 90% capacity. | Advisory warning alert (no power lock) |
+| **🌡️ Thermal Sensors** | Direct reading from `/sys/class/thermal/` and `/sys/class/hwmon/` (> 92°C). | Advisory warning alert (no power lock) |
+| **🧠 Memory Pressure** | Linux PSI (`/proc/pressure/memory`) stall detection before OOM freeze. | Advisory warning alert (no power lock) |
+| **⚙️ System Services** | Failed systemd units with detailed journal triage. | Advisory diagnosis in report (no power lock) |
 
 ---
 

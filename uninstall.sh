@@ -45,12 +45,13 @@ if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
     rm -f "$TARGET_HOME/.config/systemd/user/sys-guardian.service" "$TARGET_HOME/.config/systemd/user/sys-guardian-tray.service"
     rm -f "$TARGET_HOME/.config/autostart/sys-guardian-tray.desktop"
     rm -rf "$TARGET_HOME/.local/share/sys-guardian"
+    rm -f "$TARGET_HOME/.local/bin/sys-guardian" "$TARGET_HOME/.local/bin/sys-guardian-tray"
 fi
 echo -e "${GREEN}✓ All services stopped and processes terminated.${RESET}"
 
 # 2. Remove Executable Binaries
 echo -e "\n${BOLD}[2/4] Removing executable binaries from /usr/local/bin...${RESET}"
-rm -f /usr/local/bin/sys-guardian /usr/local/bin/sys-guardian-tray
+rm -f /usr/local/bin/sys-guardian /usr/local/bin/sys-guardian-tray /root/.local/bin/sys-guardian /root/.local/bin/sys-guardian-tray
 echo -e "${GREEN}✓ Binaries removed.${RESET}"
 
 # 3. Remove /etc Configs, Autostart, Completion, Polkit, and Man Page

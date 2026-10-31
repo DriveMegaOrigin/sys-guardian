@@ -157,9 +157,9 @@ send_alert() {
     # Priority 1: Native Freedesktop D-Bus Notification (org.freedesktop.Notifications)
     # Works 100% on Wayland and X11 without depending on display forwarding or notify-send binary
     local alert_action='
-title="'"$title"'"
-msg="'"$message"'"
-urgency="'"$urgency"'"
+title="$1"
+msg="$2"
+urgency="${3:-critical}"
 icon="dialog-warning"
 [ "$urgency" = "critical" ] && icon="dialog-error"
 
@@ -215,13 +215,13 @@ fi
             DBUS_SESSION_BUS_ADDRESS="$user_bus" \
             DISPLAY="$x11_disp" \
             WAYLAND_DISPLAY="$wayland_disp" \
-            bash -c "$alert_action" >/dev/null 2>&1 &
+            bash -c "$alert_action" _ "$title" "$message" "$urgency" >/dev/null 2>&1 &
     else
         XDG_RUNTIME_DIR="$user_runtime" \
         DBUS_SESSION_BUS_ADDRESS="$user_bus" \
         DISPLAY="${DISPLAY:-$x11_disp}" \
         WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-$wayland_disp}" \
-        bash -c "$alert_action" >/dev/null 2>&1 &
+        bash -c "$alert_action" _ "$title" "$message" "$urgency" >/dev/null 2>&1 &
     fi
 }
 

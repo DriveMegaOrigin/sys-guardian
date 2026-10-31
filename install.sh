@@ -58,14 +58,16 @@ fi
 if [ -L "/usr/local/bin/sys-guardian-tray" ]; then
     rm -f /usr/local/bin/sys-guardian-tray
 fi
-# Stop old user services if present
+# Stop old user services and remove legacy user binaries if present
 if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
     sudo -u "$SUDO_USER" XDG_RUNTIME_DIR="/run/user/$(id -u "$SUDO_USER")" systemctl --user stop sys-guardian.service sys-guardian-tray.service 2>/dev/null || true
     sudo -u "$SUDO_USER" XDG_RUNTIME_DIR="/run/user/$(id -u "$SUDO_USER")" systemctl --user disable sys-guardian.service sys-guardian-tray.service 2>/dev/null || true
     TARGET_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
     rm -f "$TARGET_HOME/.config/systemd/user/sys-guardian.service" "$TARGET_HOME/.config/systemd/user/sys-guardian-tray.service"
+    rm -f "$TARGET_HOME/.local/bin/sys-guardian" "$TARGET_HOME/.local/bin/sys-guardian-tray"
 fi
-echo -e "${GREEN}✓ Cleaned legacy units and symlinks.${RESET}"
+rm -f /root/.local/bin/sys-guardian /root/.local/bin/sys-guardian-tray
+echo -e "${GREEN}✓ Cleaned legacy units, user binaries, and symlinks.${RESET}"
 
 # 3. Install Executable Binaries directly to /usr/local/bin (Full Permissions)
 echo -e "\n${BOLD}[3/6] Installing executable binaries into /usr/local/bin...${RESET}"

@@ -58,6 +58,7 @@ echo -e "\n${BOLD}[3/4] Removing system integrations...${RESET}"
 rm -f /etc/xdg/autostart/sys-guardian-tray.desktop
 rm -f /etc/polkit-1/rules.d/99-sysguardian.rules
 rm -f /etc/bash_completion.d/sys-guardian /usr/share/bash-completion/completions/sys-guardian
+rm -f /etc/profile.d/sys-guardian.sh
 rm -rf /etc/sys-guardian
 rm -f /usr/local/share/man/man1/sys-guardian.1
 command -v mandb >/dev/null 2>&1 && mandb -q 2>/dev/null || true

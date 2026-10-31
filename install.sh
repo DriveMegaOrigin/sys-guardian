@@ -130,12 +130,39 @@ if [ -d "/usr/local/share/man/man1" ] || mkdir -p "/usr/local/share/man/man1"; t
     echo -e "${GREEN}✓ Manual page installed (run: man sys-guardian)${RESET}"
 fi
 
-# Clean up legacy Polkit rule (systemd-inhibit provides native non-destructive GUI prompts without black screen lockouts)
+# Clean up legacy Polkit rule (Zero Blocking: Polkit rules never block reboot or shutdown)
 if [ -f "/etc/polkit-1/rules.d/99-sysguardian.rules" ]; then
     rm -f /etc/polkit-1/rules.d/99-sysguardian.rules
     systemctl restart polkit 2>/dev/null || true
-    echo -e "${GREEN}✓ Cleaned legacy Polkit rule (desktop prompts handled natively via systemd-inhibit)${RESET}"
+    echo -e "${GREEN}✓ Cleaned legacy Polkit rule (Zero blocking policy active)${RESET}"
 fi
+
+# Pre-shutdown terminal advisory (Pure Sentinel Mode - Non-blocking)
+cat << 'EOF' > /etc/profile.d/sys-guardian.sh
+# Sys-Guardian Pre-Shutdown Advisory (Non-blocking)
+safe_power_action() {
+    local action_cmd="$1"
+    shift
+    if command -v sys-guardian >/dev/null 2>&1; then
+        if ! sys-guardian check >/dev/null 2>&1; then
+            echo -e "\n⚠️ \033[1;33m[SYS-GUARDIAN - AVISO ANTES DE ENCERRAR]\033[0m"
+            echo -e "\033[1;31mForam detetadas anomalias ou atualizações ativas no sistema!\033[0m"
+            local rep="/run/sys-guardian/report.txt"
+            [ ! -f "$rep" ] && rep="/tmp/sys-guardian-report.txt"
+            [ -f "$rep" ] && cat "$rep"
+            echo -e "\n\033[1;33mA prosseguir com o encerramento em 4 segundos... (Pressiona Ctrl+C para cancelar e guardar trabalho)\033[0m\n"
+            sleep 4
+        fi
+    fi
+    sudo $action_cmd "$@"
+}
+alias reboot='safe_power_action systemctl reboot'
+alias poweroff='safe_power_action systemctl poweroff'
+alias halt='safe_power_action systemctl halt'
+alias shutdown='safe_power_action shutdown'
+EOF
+chmod 644 /etc/profile.d/sys-guardian.sh 2>/dev/null || true
+echo -e "${GREEN}✓ Pre-shutdown terminal advisory registered in /etc/profile.d/sys-guardian.sh${RESET}"
 
 echo -e "\n${GREEN}${BOLD}==================================================${RESET}"
 echo -e "${GREEN}${BOLD}🎉 Sys-Guardian System Service Successfully Installed!${RESET}"

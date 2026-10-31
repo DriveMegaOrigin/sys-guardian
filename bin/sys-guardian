@@ -7,7 +7,7 @@
 
 set -o pipefail
 
-VERSION="3.2.0"
+VERSION="3.3.0"
 
 # Standard System FHS Paths
 if [ -d "/run/sys-guardian" ]; then
@@ -81,21 +81,11 @@ BOLD="\033[1m"
 RESET="\033[0m"
 
 # ------------------------------------------------------------------------------
-# Systemd Native Inhibitor Lock Management (Zero Root, Native Desktop Prompt)
+# Pure Sentinel Mode (Zero Blocking: Shutdown is NEVER delayed or inhibited)
 # ------------------------------------------------------------------------------
 start_inhibitor() {
-    local reason="${1:-System update in progress}"
-    if command -v systemd-inhibit >/dev/null 2>&1; then
-        if [ ! -f "$INHIBIT_PID_FILE" ] || ! kill -0 "$(cat "$INHIBIT_PID_FILE" 2>/dev/null)" 2>/dev/null; then
-            # Mode=delay prevents black-screen TTY lockups; shutdown only (never sleep/lid)
-            systemd-inhibit --what=shutdown \
-                            --who="Sys-Guardian" \
-                            --why="$reason (unblock via tray icon or run: sys-guardian unblock)" \
-                            --mode=delay \
-                            sleep 45 >/dev/null 2>&1 &
-            echo $! > "$INHIBIT_PID_FILE"
-        fi
-    fi
+    # Sentinel Mode: Purely advisory warnings, zero power delays or blocking
+    return 0
 }
 
 stop_inhibitor() {
@@ -438,12 +428,8 @@ EOF
             send_alert "$alert_title" "$alert_summary"
         fi
 
-        # Only inhibit shutdown if package manager is actually writing files to protect DB integrity!
-        if [ $pkg_busy -eq 1 ]; then
-            start_inhibitor "$alert_title: $(echo "$alert_summary" | head -n 1)"
-        else
-            stop_inhibitor
-        fi
+        # Pure Sentinel Mode: purely advisory warnings, no shutdown delay or inhibition
+        stop_inhibitor
 
         rm -f "$RAW_FILE"
         return 1
@@ -576,38 +562,21 @@ run_diagnose() {
         fi
     fi
 
-    if [ -f "$LOCK_FILE" ] || [ $active_inhibitor -eq 1 ]; then
-        echo -e "${RED}🔴 BLOCKED (Protection active). Run 'sys-guardian status' to read details.${RESET}"
-        if [ $active_inhibitor -eq 1 ]; then
-            local inh_pid=""
-            [ -f "$INHIBIT_PID_FILE" ] && inh_pid="$(cat "$INHIBIT_PID_FILE" 2>/dev/null)"
-            echo -e "   └─ Systemd Inhibitor Lock: ${CYAN}ACTIVE (PID ${inh_pid:-detected via logind})${RESET}"
-        fi
+    if [ -f "$LOCK_FILE" ]; then
+        echo -e "${YELLOW}🟡 ADVISORY WARNING (Issues detected - Shutdown 100% Free).${RESET}"
     else
-        echo -e "${GREEN}🟢 FREE (No active power inhibitors).${RESET}"
+        echo -e "${GREEN}🟢 NORMAL (System stable - Shutdown free).${RESET}"
     fi
     echo -e "${BOLD}==================================================${RESET}"
 }
 
 run_status() {
-    local ghost_inhibitor=0
-    if command -v systemd-inhibit >/dev/null 2>&1; then
-        if systemd-inhibit --list 2>/dev/null | grep -q "Sys-Guardian"; then
-            ghost_inhibitor=1
-        fi
-    fi
-
-    if [ -f "$LOCK_FILE" ] || [ "$ghost_inhibitor" -eq 1 ]; then
-        echo -e "${RED}🔴 STATUS: BLOCKED (Issues detected)${RESET}"
-        if [ -f "$LOCK_FILE" ]; then
-            if [ -f "$REPORT_FILE" ]; then
-                cat "$REPORT_FILE"
-            elif [ -f "$GLOBAL_REPORT" ]; then
-                cat "$GLOBAL_REPORT"
-            fi
-        elif [ "$ghost_inhibitor" -eq 1 ]; then
-            echo -e "⚠️ Active systemd inhibitor detected without lockfile (ghost lock)."
-            echo -e "Run 'sys-guardian unblock' to clean up."
+    if [ -f "$LOCK_FILE" ]; then
+        echo -e "${YELLOW}🟡 STATUS: ADVISORY WARNING (Issues detected - Shutdown 100% Free)${RESET}"
+        if [ -f "$REPORT_FILE" ]; then
+            cat "$REPORT_FILE"
+        elif [ -f "$GLOBAL_REPORT" ]; then
+            cat "$GLOBAL_REPORT"
         fi
         return 1
     elif [ -f "$IGNORED_FLAG_FILE" ]; then

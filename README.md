@@ -22,7 +22,7 @@ If you run **GPU Passthrough (VFIO/QEMU)**, discrete graphics cards (NVIDIA/AMD)
 
 **Sys-Guardian** runs as a native system service in `/etc/systemd/system/` to solve this:
 * ⚡ **Instant Detection (< 1s)**: Continuously listens to kernel log events using zero-overhead inotify (`journalctl -f`), catching GPU and hardware crashes the second they happen.
-* 🛑 **Native `systemd-inhibit` Protection**: Takes an inhibitor lock (`systemd-inhibit`). In KDE Plasma and GNOME, shutdown/reboot buttons display an interactive prompt: *"Sys-Guardian is preventing shutdown: [Reason]. Shut down anyway?"* — eliminating frustrating hard locks and silent freezes.
+* 📢 **Pure Sentinel Mode (Zero Blocking)**: Never blocks or holds shutdown hostage. Displays immediate visual notifications on your desktop (KDE Plasma, GNOME, XFCE) and prints a transparent 4-second notice in your terminal, leaving final control entirely in your hands.
 * 🖥️ **Desktop Systray Applet**: Automatically launches a discrete tray icon on your desktop panel: **🟢 Green Shield** when healthy, **🔴 Red Shield** with alert tooltips and quick triage menus when compromised.
 * 📦 **Persistent Blackbox (2 Records)**: Keeps only the last 2 crash reports in `/var/log/sys-guardian/`. Unlike `/tmp` (which gets wiped on reboot), you can always inspect what caused the crash with `sys-guardian log-last`.
 * 🪶 **Ultra-lightweight**: Pure Bash and Linux native interfaces (`sysfs`, `procfs`, `systemd`). Consumes **< 0.1% CPU** and **< 15MB RAM** combined.

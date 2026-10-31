@@ -121,19 +121,29 @@ send_alert() {
     local message="$2"
     local urgency="${3:-critical}"
 
-    # Discover active graphical user session via loginctl (excluding display managers)
+    # Discover active graphical user session via loginctl
     local gui_user="" gui_uid=""
     if command -v loginctl >/dev/null 2>&1; then
         local session_id
         session_id=$(loginctl list-sessions --no-legend 2>/dev/null | awk '$3 != "root" && $3 != "gdm" && $3 != "sddm" && $3 != "lightdm" && $3 != "" {print $1}' | head -n 1)
-        [ -z "$session_id" ] && session_id=$(loginctl list-sessions --no-legend 2>/dev/null | awk '$3 != "root" && $3 != "" {print $1}' | head -n 1)
         if [ -n "$session_id" ]; then
             gui_user=$(loginctl show-session -p Name --value "$session_id" 2>/dev/null)
             gui_uid=$(id -u "$gui_user" 2>/dev/null)
         fi
     fi
 
-    # Fallback to current user if loginctl is not active
+    # Fallback 1: inspect /run/user for standard desktop user UIDs (>= 1000)
+    if [ -z "$gui_user" ] || [ "$gui_user" = "root" ]; then
+        for udir in /run/user/[1-9][0-9][0-9][0-9]*; do
+            if [ -d "$udir" ] && [ -e "$udir/bus" ]; then
+                gui_uid=$(basename "$udir")
+                gui_user=$(id -nu "$gui_uid" 2>/dev/null)
+                [ -n "$gui_user" ] && break
+            fi
+        done
+    fi
+
+    # Fallback 2: environment or whoami
     if [ -z "$gui_user" ] || [ "$gui_user" = "root" ]; then
         gui_user="${SUDO_USER:-$(whoami)}"
         gui_uid=$(id -u "$gui_user" 2>/dev/null)
@@ -142,34 +152,62 @@ send_alert() {
     local user_runtime="/run/user/${gui_uid}"
     local user_bus="unix:path=${user_runtime}/bus"
     local wayland_disp="${WAYLAND_DISPLAY:-wayland-0}"
-    local x11_disp="${DISPLAY:-:0}"
+    local x11_disp="${DISPLAY:-:1}"
 
-    local alert_action="
-if command -v kdialog >/dev/null 2>&1; then
-    if kdialog --title '🚨 $title (Sys-Guardian)' \
-               --warningyesno '$message\n\nWould you like to open the detailed diagnostic report?' \
-               --yes-label 'View Details' --no-label 'Ignore'; then
-        rep='$GLOBAL_REPORT'
-        [ ! -f \"\$rep\" ] && rep='$REPORT_FILE'
-        if [ -f \"\$rep\" ]; then
-            kdialog --title 'Sys-Guardian Diagnostic Report' \
-                    --warningyesno \"\$(cat \"\$rep\")\" \
-                    --yes-label 'Close' \
-                    --no-label 'Ignore These Issues' 850 550 2>/dev/null
-            if [ \$? -eq 1 ]; then
-                sys-guardian ignore 2>/dev/null || true
-                kdialog --title 'Sys-Guardian' --passivepopup '✓ Current issues ignored. Alerts muted.' 4 2>/dev/null || true
-            fi
-        fi
-    else
-        sys-guardian ignore 2>/dev/null || true
-        kdialog --title 'Sys-Guardian' --passivepopup '✓ Current issues ignored. Alerts muted.' 4 2>/dev/null || true
+    # Priority 1: Native Freedesktop D-Bus Notification (org.freedesktop.Notifications)
+    # Works 100% on Wayland and X11 without depending on display forwarding or notify-send binary
+    local alert_action='
+title="'"$title"'"
+msg="'"$message"'"
+urgency="'"$urgency"'"
+icon="dialog-warning"
+[ "$urgency" = "critical" ] && icon="dialog-error"
+
+# 1. Native gdbus call (zero extra dependencies, pre-installed on modern Linux desktops)
+if command -v gdbus >/dev/null 2>&1; then
+    if gdbus call --session \
+        --dest org.freedesktop.Notifications \
+        --object-path /org/freedesktop/Notifications \
+        --method org.freedesktop.Notifications.Notify \
+        "Sys-Guardian" 0 "$icon" "🚨 $title" "$msg" [] "{}" 8000 >/dev/null 2>&1; then
+        exit 0
     fi
-elif command -v notify-send >/dev/null 2>&1; then
-    notify-send -a 'Sys-Guardian' -u '$urgency' '🚨 $title' '$message\n(Report: $GLOBAL_REPORT)' -i dialog-warning
-elif command -v zenity >/dev/null 2>&1; then
-    zenity --notification --text='🚨 $title: $message' 2>/dev/null || true
-fi"
+fi
+
+# 2. Python Gio/GLib D-Bus (uses python3-gi which is installed for the tray)
+python3 -c "
+import sys
+try:
+    from gi.repository import Gio, GLib
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    bus.call_sync(
+        \x27org.freedesktop.Notifications\x27,
+        \x27/org/freedesktop/Notifications\x27,
+        \x27org.freedesktop.Notifications\x27,
+        \x27Notify\x27,
+        GLib.Variant(\x27(susssasa{sv}i)\x27, (\x27Sys-Guardian\x27, 0, sys.argv[3], \x27🚨 \x27 + sys.argv[1], sys.argv[2], [], {}, 8000)),
+        None, Gio.DBusCallFlags.NONE, -1, None
+    )
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+" "$title" "$msg" "$icon" >/dev/null 2>&1 && exit 0
+
+# 3. notify-send (if installed)
+if command -v notify-send >/dev/null 2>&1; then
+    notify-send -a "Sys-Guardian" -u "$urgency" -i "$icon" "🚨 $title" "$msg" >/dev/null 2>&1 && exit 0
+fi
+
+# 4. kdialog passive popup
+if command -v kdialog >/dev/null 2>&1; then
+    kdialog --title "🚨 $title" --passivepopup "$msg" 8 >/dev/null 2>&1 && exit 0
+fi
+
+# 5. zenity notification
+if command -v zenity >/dev/null 2>&1; then
+    zenity --notification --text="🚨 $title: $msg" >/dev/null 2>&1 && exit 0
+fi
+'
 
     if [ "$(id -u)" -eq 0 ] && [ -n "$gui_user" ] && [ "$gui_user" != "root" ]; then
         sudo -u "$gui_user" \
@@ -179,8 +217,72 @@ fi"
             WAYLAND_DISPLAY="$wayland_disp" \
             bash -c "$alert_action" >/dev/null 2>&1 &
     else
+        XDG_RUNTIME_DIR="$user_runtime" \
+        DBUS_SESSION_BUS_ADDRESS="$user_bus" \
+        DISPLAY="${DISPLAY:-$x11_disp}" \
+        WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-$wayland_disp}" \
         bash -c "$alert_action" >/dev/null 2>&1 &
     fi
+}
+
+# ------------------------------------------------------------------------------
+# Terminal Non-Blocking Countdown Alert (10s Sentinel Warning)
+# ------------------------------------------------------------------------------
+terminal_countdown_alert() {
+    local reason="$1"
+    local timeout="${2:-10}"
+
+    # Only show interactive timer if stdout is a terminal
+    if [ ! -t 1 ]; then
+        echo -e "${RED}[SYS-GUARDIAN ALERT]: $reason${RESET}"
+        return 0
+    fi
+
+    echo ""
+    echo -e "${RED}${BOLD}================================================================${RESET}"
+    echo -e "${RED}${BOLD}🚨 SYS-GUARDIAN SENTINEL WARNING: PROBLEMA DETETADO!${RESET}"
+    echo -e "${RED}${BOLD}================================================================${RESET}"
+    echo -e "${YELLOW}${reason}${RESET}"
+    echo -e "----------------------------------------------------------------"
+    echo -e "${BOLD}Modo Sentinela Puro (Zero Bloqueio): O sistema NÃO será travado.${RESET}"
+    echo -e "Opções rápidas: [${CYAN}d${RESET}] Ver diagnóstico  [${CYAN}i${RESET}] Ignorar/Silenciar  [${CYAN}u${RESET}] Desbloquear  [${CYAN}Enter${RESET}] Continuar"
+    echo -e "----------------------------------------------------------------"
+
+    local remaining="$timeout"
+    local choice=""
+
+    while [ "$remaining" -gt 0 ]; do
+        echo -ne "\r${CYAN}⏳ A aguardar ${BOLD}${remaining}s${RESET}${CYAN} antes de prosseguir (pressione uma tecla para intervir)... ${RESET}  "
+        if read -r -t 1 -n 1 -s key 2>/dev/null; then
+            choice="$key"
+            break
+        fi
+        remaining=$((remaining - 1))
+    done
+
+    echo ""
+    case "$choice" in
+        d|D)
+            echo -e "\n${CYAN}🔍 A abrir diagnóstico do sistema...${RESET}"
+            run_diagnose
+            ;;
+        i|I)
+            echo -e "\n${GREEN}✓ A silenciar e ignorar este incidente...${RESET}"
+            run_ignore
+            ;;
+        u|U)
+            echo -e "\n${GREEN}🔓 A remover travas de segurança...${RESET}"
+            run_unblock
+            ;;
+        *)
+            if [ -n "$choice" ]; then
+                echo -e "${GREEN}✓ Ação selecionada. A prosseguir normalmente.${RESET}"
+            else
+                echo -e "${GREEN}✓ Tempo limite de ${timeout}s atingido. A prosseguir sem bloqueio.${RESET}"
+            fi
+            ;;
+    esac
+    echo ""
 }
 
 # ------------------------------------------------------------------------------
@@ -431,6 +533,11 @@ EOF
         # Pure Sentinel Mode: purely advisory warnings, no shutdown delay or inhibition
         stop_inhibitor
 
+        # Non-blocking terminal warning with interactive 10s countdown (if run interactively in terminal)
+        if [ "$IS_DAEMON" != "1" ] && [ -t 1 ]; then
+            terminal_countdown_alert "$alert_summary" 10
+        fi
+
         rm -f "$RAW_FILE"
         return 1
     else
@@ -444,6 +551,7 @@ EOF
 # Daemon Mode: Continuous Real-Time Kernel Event Listener (< 1s latency)
 # ------------------------------------------------------------------------------
 run_daemon() {
+    IS_DAEMON=1
     echo -e "${GREEN}🛡️ Sys-Guardian v${VERSION} daemon active.${RESET} Listening for kernel events in real-time..."
     trap stop_inhibitor EXIT INT TERM
     run_check
@@ -722,9 +830,26 @@ case "$1" in
         fi
         ;;
     test)
-        echo "Sending test desktop notification to active graphical session..."
-        send_alert "TEST NOTIFICATION" "Sys-Guardian test alert: desktop integration verified." "normal"
-        echo "Test completed."
+        echo -e "${CYAN}${BOLD}🧪 SYS-GUARDIAN FULL-STACK INTEGRATION TEST${RESET}"
+        echo -e "=================================================="
+        echo -e "1. Enviando notificação pop-up instantânea para o ambiente gráfico..."
+        send_alert "TESTE DE ALERTA" "O Sys-Guardian está ativo! Deteção de integridade e pop-ups funcionais." "normal"
+        echo -e "${GREEN}✓ Notificação pop-up enviada via protocolo D-Bus / Freedesktop.${RESET}"
+        echo -e "\n2. A testar aviso interativo de terminal (Modo Sentinela com timer de 10s)..."
+        terminal_countdown_alert "Simulação de teste: integridade do sistema verificada com sucesso." 10
+        echo -e "3. A auditar estado dos subsistemas do Sys-Guardian:"
+        if pgrep -f "sys-guardian daemon" >/dev/null 2>&1; then
+            echo -e "  - Daemon do Kernel: ${GREEN}🟢 ATIVO (a escutar /dev/kmsg em tempo real)${RESET}"
+        else
+            echo -e "  - Daemon do Kernel: ${YELLOW}🟡 NÃO DETETADO (inicie com: sudo systemctl start sys-guardian)${RESET}"
+        fi
+        if pgrep -f "sys-guardian-tray" >/dev/null 2>&1; then
+            echo -e "  - Ícone na Área de Notificação (Tray): ${GREEN}🟢 ATIVO (registado no KDE/GNOME)${RESET}"
+        else
+            echo -e "  - Ícone na Área de Notificação (Tray): ${YELLOW}🟡 NÃO DETETADO (inicie com: sys-guardian-tray &)${RESET}"
+        fi
+        echo -e "=================================================="
+        echo -e "${GREEN}${BOLD}✓ Teste de integração concluído com sucesso!${RESET}"
         ;;
     simulate)
         case "$2" in

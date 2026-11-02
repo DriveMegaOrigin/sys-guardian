@@ -147,12 +147,12 @@ safe_power_action() {
     shift
     if command -v sys-guardian >/dev/null 2>&1; then
         if ! sys-guardian check >/dev/null 2>&1; then
-            echo -e "\n⚠️ \033[1;33m[SYS-GUARDIAN - AVISO ANTES DE ENCERRAR]\033[0m"
-            echo -e "\033[1;31mForam detetadas anomalias ou atualizações ativas no sistema!\033[0m"
+            echo -e "\n⚠️ \033[1;33m[SYS-GUARDIAN - PRE-SHUTDOWN ADVISORY]\033[0m"
+            echo -e "\033[1;31mActive system updates or hardware anomalies detected!\033[0m"
             local rep="/run/sys-guardian/report.txt"
             [ ! -f "$rep" ] && rep="/tmp/sys-guardian-report.txt"
             [ -f "$rep" ] && cat "$rep"
-            echo -e "\n\033[1;33mA prosseguir com o encerramento em 4 segundos... (Pressiona Ctrl+C para cancelar e guardar trabalho)\033[0m\n"
+            echo -e "\n\033[1;33mProceeding with shutdown in 4 seconds... (Press Ctrl+C to abort and save work)\033[0m\n"
             sleep 4
         fi
     fi
@@ -178,3 +178,4 @@ echo -e "  ${CYAN}sys-guardian test${RESET}          - Send a test alert to your
 echo -e "  ${CYAN}sys-guardian simulate gpu${RESET}  - Simulate a GPU bus-drop event"
 echo -e "  ${CYAN}sys-guardian log-last${RESET}      - View the persistent Blackbox (/var/log/sys-guardian/)"
 echo -e "  ${CYAN}sys-guardian unblock${RESET}       - Clear any active power lock"
+echo -e "\n${YELLOW}Tip: If this terminal session was already open, run '${BOLD}hash -r${RESET}${YELLOW}' or open a new terminal.${RESET}"

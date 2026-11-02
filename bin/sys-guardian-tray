@@ -12,12 +12,17 @@ import gc
 import ctypes
 import subprocess
 import signal
+import re
+import shutil
 
 try:
     from gi.repository import GLib, Gio
 except ImportError:
     print("Error: PyGObject (python3-gi) is required for the system tray applet.")
     sys.exit(1)
+
+def strip_ansi(text):
+    return re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', text)
 
 # Memory optimization helper: releases arena pages back to OS
 def trim_memory():
@@ -76,12 +81,13 @@ def launch_terminal(cmd_str):
     return False
 
 def show_msg_dialog(title, text):
+    clean_text = strip_ansi(text).strip()
     if shutil.which("kdialog"):
-        subprocess.Popen(["kdialog", "--title", title, "--msgbox", text])
+        subprocess.Popen(["kdialog", "--title", title, "--msgbox", clean_text])
     elif shutil.which("zenity"):
-        subprocess.Popen(["zenity", "--info", "--title", title, "--text", text])
+        subprocess.Popen(["zenity", "--info", "--title", title, "--text", clean_text])
     else:
-        launch_terminal(f"echo -e {subprocess.list2cmdline([text])}")
+        launch_terminal(f"echo -e {subprocess.list2cmdline([clean_text])}")
 
 def show_file_dialog(title, filepath):
     if shutil.which("kdialog"):
@@ -199,7 +205,7 @@ fi
                 out = subprocess.check_output(["sys-guardian", "status"], text=True, stderr=subprocess.STDOUT)
             except subprocess.CalledProcessError as e:
                 out = e.output or "System alert!"
-            subprocess.Popen(["kdialog", "--title", "Sys-Guardian Status", "--msgbox", out])
+            show_msg_dialog("Sys-Guardian Status", out)
 
     def on_method_call(self, connection, sender, path, iface, method_name, params, invocation):
         if method_name in ("Activate", "SecondaryActivate"):

@@ -7,15 +7,20 @@
 
 set -o pipefail
 
+# Ensure valid execution context even if caller shell is in an unlinked/deleted directory
+if ! pwd >/dev/null 2>&1; then
+    cd / 2>/dev/null || true
+fi
+
 VERSION="3.3.0"
 
 # Standard System FHS Paths
-if [ -d "/run/sys-guardian" ]; then
+if [ -d "/run/sys-guardian" ] && [ -w "/run/sys-guardian" ]; then
     RUNTIME_DIR="/run/sys-guardian"
 elif [ -n "$XDG_RUNTIME_DIR" ] && [ -d "$XDG_RUNTIME_DIR" ]; then
     RUNTIME_DIR="$XDG_RUNTIME_DIR/sys-guardian"
 else
-    RUNTIME_DIR="/tmp/sys-guardian"
+    RUNTIME_DIR="/tmp/sys-guardian-$(id -u 2>/dev/null || echo 0)"
 fi
 mkdir -p "$RUNTIME_DIR" 2>/dev/null
 chmod 755 "$RUNTIME_DIR" 2>/dev/null || true
@@ -72,13 +77,22 @@ if [ -r "$CONFIG_FILE" ]; then
     done < <(grep -E '^[a-zA-Z0-9_]+=' "$CONFIG_FILE" 2>/dev/null)
 fi
 
-# ANSI Colors
-RED="\033[1;31m"
-GREEN="\033[1;32m"
-YELLOW="\033[1;33m"
-CYAN="\033[1;36m"
-BOLD="\033[1m"
-RESET="\033[0m"
+# ANSI Colors (only enabled in interactive terminal sessions)
+if [ -t 1 ]; then
+    RED="\033[1;31m"
+    GREEN="\033[1;32m"
+    YELLOW="\033[1;33m"
+    CYAN="\033[1;36m"
+    BOLD="\033[1m"
+    RESET="\033[0m"
+else
+    RED=""
+    GREEN=""
+    YELLOW=""
+    CYAN=""
+    BOLD=""
+    RESET=""
+fi
 
 # ------------------------------------------------------------------------------
 # Pure Sentinel Mode (Zero Blocking: Shutdown is NEVER delayed or inhibited)
@@ -240,19 +254,19 @@ terminal_countdown_alert() {
 
     echo ""
     echo -e "${RED}${BOLD}================================================================${RESET}"
-    echo -e "${RED}${BOLD}🚨 SYS-GUARDIAN SENTINEL WARNING: PROBLEMA DETETADO!${RESET}"
+    echo -e "${RED}${BOLD}🚨 SYS-GUARDIAN SENTINEL WARNING: ISSUE DETECTED!${RESET}"
     echo -e "${RED}${BOLD}================================================================${RESET}"
     echo -e "${YELLOW}${reason}${RESET}"
     echo -e "----------------------------------------------------------------"
-    echo -e "${BOLD}Modo Sentinela Puro (Zero Bloqueio): O sistema NÃO será travado.${RESET}"
-    echo -e "Opções rápidas: [${CYAN}d${RESET}] Ver diagnóstico  [${CYAN}i${RESET}] Ignorar/Silenciar  [${CYAN}u${RESET}] Desbloquear  [${CYAN}Enter${RESET}] Continuar"
+    echo -e "${BOLD}Pure Sentinel Mode (Zero Blocking): System power actions will NOT be held.${RESET}"
+    echo -e "Quick actions: [${CYAN}d${RESET}] View diagnose  [${CYAN}i${RESET}] Ignore & mute  [${CYAN}u${RESET}] Unblock  [${CYAN}Enter${RESET}] Continue"
     echo -e "----------------------------------------------------------------"
 
     local remaining="$timeout"
     local choice=""
 
     while [ "$remaining" -gt 0 ]; do
-        echo -ne "\r${CYAN}⏳ A aguardar ${BOLD}${remaining}s${RESET}${CYAN} antes de prosseguir (pressione uma tecla para intervir)... ${RESET}  "
+        echo -ne "\r${CYAN}⏳ Continuing in ${BOLD}${remaining}s${RESET}${CYAN}... (press any key to intervene): ${RESET}  "
         if read -r -t 1 -n 1 -s key 2>/dev/null; then
             choice="$key"
             break
@@ -263,22 +277,22 @@ terminal_countdown_alert() {
     echo ""
     case "$choice" in
         d|D)
-            echo -e "\n${CYAN}🔍 A abrir diagnóstico do sistema...${RESET}"
+            echo -e "\n${CYAN}🔍 Opening system diagnostic triage...${RESET}"
             run_diagnose
             ;;
         i|I)
-            echo -e "\n${GREEN}✓ A silenciar e ignorar este incidente...${RESET}"
+            echo -e "\n${GREEN}✓ Current issue ignored. Alerts muted.${RESET}"
             run_ignore
             ;;
         u|U)
-            echo -e "\n${GREEN}🔓 A remover travas de segurança...${RESET}"
+            echo -e "\n${GREEN}🔓 Removing power safety inhibitors...${RESET}"
             run_unblock
             ;;
         *)
             if [ -n "$choice" ]; then
-                echo -e "${GREEN}✓ Ação selecionada. A prosseguir normalmente.${RESET}"
+                echo -e "${GREEN}✓ Action chosen. Proceeding normally.${RESET}"
             else
-                echo -e "${GREEN}✓ Tempo limite de ${timeout}s atingido. A prosseguir sem bloqueio.${RESET}"
+                echo -e "${GREEN}✓ ${timeout}s timeout reached. Proceeding without blocking.${RESET}"
             fi
             ;;
     esac
@@ -466,7 +480,21 @@ run_check() {
         fi
     fi
 
-    # 5. Root Partition Storage Capacity (Advisory warning only; do not block shutdown)
+    # 5. Out of Memory (OOM) Killer Invocations
+    local oom_events
+    oom_events=$(journalctl -k -b --since "10 minutes ago" -p 0..3 2>/dev/null | \
+                 grep -iE "Out of Memory: Kill process|invoked oom-killer" | \
+                 grep -v -- "-- No entries --" | tail -n 5)
+    if [ -n "$oom_events" ]; then
+        error_found=1
+        alert_title="OUT OF MEMORY (OOM) CRASH"
+        alert_summary="Linux kernel OOM killer was invoked to kill processes!\nTo review details or unblock: sys-guardian log-last"
+        echo "=== [OUT OF MEMORY (OOM) KILLER EVENT] ===" >> "$RAW_FILE"
+        echo "$oom_events" >> "$RAW_FILE"
+        echo "--------------------------------------------------" >> "$RAW_FILE"
+    fi
+
+    # 6. Root Partition Storage Capacity (Advisory warning only; do not block shutdown)
     local root_usage
     root_usage=$(df --output=pcent / 2>/dev/null | tr -dc '0-9')
     if [ -n "$root_usage" ] && [ "$root_usage" -ge "$DISK_WARN_THRESHOLD" ]; then
@@ -832,24 +860,24 @@ case "$1" in
     test)
         echo -e "${CYAN}${BOLD}🧪 SYS-GUARDIAN FULL-STACK INTEGRATION TEST${RESET}"
         echo -e "=================================================="
-        echo -e "1. Enviando notificação pop-up instantânea para o ambiente gráfico..."
-        send_alert "TESTE DE ALERTA" "O Sys-Guardian está ativo! Deteção de integridade e pop-ups funcionais." "normal"
-        echo -e "${GREEN}✓ Notificação pop-up enviada via protocolo D-Bus / Freedesktop.${RESET}"
-        echo -e "\n2. A testar aviso interativo de terminal (Modo Sentinela com timer de 10s)..."
-        terminal_countdown_alert "Simulação de teste: integridade do sistema verificada com sucesso." 10
-        echo -e "3. A auditar estado dos subsistemas do Sys-Guardian:"
+        echo -e "1. Dispatching instant desktop pop-up notification..."
+        send_alert "INTEGRATION TEST" "Sys-Guardian is active! Real-time integrity detection & pop-ups functional." "normal"
+        echo -e "${GREEN}✓ Desktop notification dispatched via Freedesktop D-Bus protocol.${RESET}"
+        echo -e "\n2. Testing interactive terminal alert (Pure Sentinel mode with 10s timer)..."
+        terminal_countdown_alert "Test simulation: system health verification completed successfully." 10
+        echo -e "3. Auditing Sys-Guardian subsystem statuses:"
         if pgrep -f "sys-guardian daemon" >/dev/null 2>&1; then
-            echo -e "  - Daemon do Kernel: ${GREEN}🟢 ATIVO (a escutar /dev/kmsg em tempo real)${RESET}"
+            echo -e "  - Kernel Daemon:     ${GREEN}🟢 ACTIVE (listening to /dev/kmsg in real-time)${RESET}"
         else
-            echo -e "  - Daemon do Kernel: ${YELLOW}🟡 NÃO DETETADO (inicie com: sudo systemctl start sys-guardian)${RESET}"
+            echo -e "  - Kernel Daemon:     ${YELLOW}🟡 NOT DETECTED (start with: sudo systemctl start sys-guardian)${RESET}"
         fi
         if pgrep -f "sys-guardian-tray" >/dev/null 2>&1; then
-            echo -e "  - Ícone na Área de Notificação (Tray): ${GREEN}🟢 ATIVO (registado no KDE/GNOME)${RESET}"
+            echo -e "  - Desktop Systray:   ${GREEN}🟢 ACTIVE (registered in KDE/GNOME notification area)${RESET}"
         else
-            echo -e "  - Ícone na Área de Notificação (Tray): ${YELLOW}🟡 NÃO DETETADO (inicie com: sys-guardian-tray &)${RESET}"
+            echo -e "  - Desktop Systray:   ${YELLOW}🟡 NOT DETECTED (launch with: sys-guardian-tray &)${RESET}"
         fi
         echo -e "=================================================="
-        echo -e "${GREEN}${BOLD}✓ Teste de integração concluído com sucesso!${RESET}"
+        echo -e "${GREEN}${BOLD}✓ Integration test completed successfully!${RESET}"
         ;;
     simulate)
         case "$2" in

@@ -581,7 +581,13 @@ EOF
 run_daemon() {
     IS_DAEMON=1
     echo -e "${GREEN}🛡️ Sys-Guardian v${VERSION} daemon active.${RESET} Listening for kernel events in real-time..."
-    trap stop_inhibitor EXIT INT TERM
+    cleanup_daemon() {
+        trap - EXIT INT TERM
+        stop_inhibitor
+        kill 0 2>/dev/null || true
+        exit 0
+    }
+    trap cleanup_daemon EXIT INT TERM
     run_check
 
     local last_periodic_check

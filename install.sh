@@ -86,8 +86,9 @@ mkdir -p /var/log/sys-guardian /run/sys-guardian
 chmod 755 /var/log/sys-guardian /run/sys-guardian
 
 systemctl daemon-reload
-systemctl enable --now sys-guardian.service
-echo -e "${GREEN}✓ System service enabled and started at boot (/etc/systemd/system/sys-guardian.service)${RESET}"
+systemctl enable sys-guardian.service
+systemctl restart sys-guardian.service
+echo -e "${GREEN}✓ System service enabled and restarted (/etc/systemd/system/sys-guardian.service)${RESET}"
 
 # 5. Configure Desktop Systray Autostart for GUI Sessions
 echo -e "\n${BOLD}[5/6] Configuring Desktop Tray Autostart (/etc/xdg/autostart)...${RESET}"
